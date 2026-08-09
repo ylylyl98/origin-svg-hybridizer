@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from array import array
+from bisect import bisect_right
 from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
+from . import __version__
 from .geometry import (
     IDENTITY,
     Matrix,
@@ -267,6 +270,7 @@ class ExportStats:
     region: Rect
     editable_text_objects: int = 0
     editable_vector_objects: int = 0
+    rasterization_method: str = "SVG renderer"
     verification_message: str = ""
 
 
@@ -276,6 +280,24 @@ class ClassificationSummary:
     editable_text_objects: int
     editable_vector_objects: int
     protected_filled_objects: int
+
+
+@dataclass(frozen=True)
+class CellMatrix:
+    """A complete, non-overlapping Origin grid with one exact color per cell."""
+
+    parent: ET.Element
+    x_edges: tuple[float, ...]
+    y_edges: tuple[float, ...]
+    colors: tuple[tuple[int, ...], ...]
+
+    @property
+    def columns(self) -> int:
+        return len(self.x_edges) - 1
+
+    @property
+    def rows(self) -> int:
+        return len(self.y_edges) - 1
 
 
 class SvgDocument:
@@ -738,13 +760,217 @@ class SvgDocument:
         root.set("preserveAspectRatio", "none")
         return root
 
+    @staticmethod
+    def _solid_cell_color(element: ET.Element) -> int | None:
+        """Return an exact ARGB cell color, or None when SVG painting is complex."""
+        style = _style_map(element)
+        fill = style.get("fill", (element.get("fill") or "").strip())
+        stroke = style.get("stroke", (element.get("stroke") or "").strip()).lower()
+        if (
+            not fill
+            or fill.lower() in {"none", "transparent", "currentcolor", "inherit"}
+            or fill.lower().startswith("url(")
+            or stroke not in {"", "none", "transparent"}
+            or any(element.get(name) for name in ("filter", "mask", "clip-path"))
+        ):
+            return None
+        try:
+            opacity = float(style.get("opacity", element.get("opacity", "1")))
+            fill_opacity = float(style.get("fill-opacity", element.get("fill-opacity", "1")))
+        except ValueError:
+            return None
+        color = QColor(fill)
+        if not color.isValid() or not math.isfinite(opacity) or not math.isfinite(fill_opacity):
+            return None
+        color.setAlpha(round(255 * max(0.0, min(1.0, opacity * fill_opacity))))
+        return color.rgba()
+
+    @staticmethod
+    def _axis_aligned_cell_bbox(element: ET.Element) -> Rect | None:
+        """Accept only untransformed rectangles or four-corner rectangular polygons."""
+        if element.get("transform"):
+            return None
+        tag = local_name(element.tag)
+        bbox = _basic_geometry_bbox(element)
+        if bbox is None or bbox.width <= 0 or bbox.height <= 0:
+            return None
+        if tag == "rect":
+            return bbox
+        if tag != "polygon":
+            return None
+        values = [float(value) for value in _SVG_NUMBER_RE.findall(element.get("points") or "")]
+        if len(values) < 8 or len(values) % 2:
+            return None
+        points = list(zip(values[0::2], values[1::2]))
+        if len(points) == 5 and points[-1] == points[0]:
+            points.pop()
+        if len(points) != 4:
+            return None
+        x0, x1 = bbox.x, bbox.x + bbox.width
+        y0, y1 = bbox.y, bbox.y + bbox.height
+        if set(points) != {(x0, y0), (x1, y0), (x1, y1), (x0, y1)}:
+            return None
+        return bbox
+
+    def _exact_cell_matrix(self, selected_ids: set[str] | frozenset[str]) -> CellMatrix | None:
+        """Recognize a complete Origin cell grid without interpreting its data."""
+        infos = [self.info_by_id[uid] for uid in selected_ids if uid in self.info_by_id]
+        if len(infos) != len(selected_ids) or not infos:
+            return None
+        parents = {id(info.parent): info.parent for info in infos}
+        if len(parents) != 1:
+            return None
+        parent = next(iter(parents.values()))
+        has_stylesheet = b"<?xml-stylesheet" in self.source_bytes or any(
+            local_name(element.tag) == "style" for element in self.root.iter()
+        )
+        if has_stylesheet and any(info.element.get("class") for info in infos):
+            return None
+        cumulative = self._cumulative_matrix(parent)
+        if (
+            abs(cumulative[1]) > 1e-12
+            or abs(cumulative[2]) > 1e-12
+            or cumulative[0] <= 0
+            or cumulative[3] <= 0
+        ):
+            return None
+
+        # Group opacity remains correct because the replacement image is inserted
+        # inside this same parent. Fill/stroke properties do not apply to images,
+        # so reject inherited painting that would make a direct color copy differ.
+        current: ET.Element | None = parent
+        while current is not None:
+            inherited_style = _style_map(current)
+            inherited_fill_opacity = inherited_style.get(
+                "fill-opacity", current.get("fill-opacity", "1")
+            )
+            inherited_stroke = inherited_style.get(
+                "stroke", (current.get("stroke") or "").strip()
+            ).lower()
+            if (
+                (has_stylesheet and current.get("class"))
+                or inherited_fill_opacity not in {"", "1", "1.0"}
+                or inherited_stroke not in {"", "none", "transparent"}
+            ):
+                return None
+            current = self.parent_map.get(current)
+
+        cells: list[tuple[float, float, float, float, int]] = []
+        x_edges: set[float] = set()
+        y_edges: set[float] = set()
+        for info in infos:
+            bbox = self._axis_aligned_cell_bbox(info.element)
+            color = self._solid_cell_color(info.element)
+            if bbox is None or color is None:
+                return None
+            x0, x1 = bbox.x, bbox.x + bbox.width
+            y0, y1 = bbox.y, bbox.y + bbox.height
+            if not all(math.isfinite(value) for value in (x0, x1, y0, y1)):
+                return None
+            x_edges.update((x0, x1))
+            y_edges.update((y0, y1))
+            cells.append((x0, x1, y0, y1, color))
+
+        xs, ys = tuple(sorted(x_edges)), tuple(sorted(y_edges))
+        columns, rows = len(xs) - 1, len(ys) - 1
+        if columns <= 0 or rows <= 0 or columns * rows != len(cells):
+            return None
+        x_lookup = {value: index for index, value in enumerate(xs[:-1])}
+        y_lookup = {value: index for index, value in enumerate(ys[:-1])}
+        colors: list[list[int | None]] = [[None] * columns for _ in range(rows)]
+        for x0, x1, y0, y1, color in cells:
+            column = x_lookup.get(x0)
+            row = y_lookup.get(y0)
+            if (
+                column is None
+                or row is None
+                or xs[column + 1] != x1
+                or ys[row + 1] != y1
+                or colors[row][column] is not None
+            ):
+                return None
+            colors[row][column] = color
+        if any(color is None for row_colors in colors for color in row_colors):
+            return None
+        return CellMatrix(
+            parent=parent,
+            x_edges=xs,
+            y_edges=ys,
+            colors=tuple(tuple(int(color) for color in row_colors) for row_colors in colors),
+        )
+
+    def _exact_matrix_png(
+        self,
+        matrix: CellMatrix,
+        region: Rect,
+        pixel_width: int,
+        pixel_height: int,
+        progress: ProgressCallback | None = None,
+    ) -> bytes:
+        """Sample exact source cells without rasterizing their shared vector edges."""
+        _report(
+            progress,
+            18,
+            f"Exact Origin matrix found: {matrix.columns:,} x {matrix.rows:,} cells",
+        )
+        cumulative = self._cumulative_matrix(matrix.parent)
+        image_region = map_rect(inverse(cumulative), region)
+        xs, ys = matrix.x_edges, matrix.y_edges
+
+        x_cells: list[int] = []
+        for target_x in range(pixel_width):
+            local_x = image_region.x + (target_x + 0.5) * image_region.width / pixel_width
+            column = bisect_right(xs, local_x) - 1
+            x_cells.append(
+                column if 0 <= column < matrix.columns and local_x < xs[column + 1] else -1
+            )
+        y_cells: list[int] = []
+        for target_y in range(pixel_height):
+            local_y = image_region.y + (target_y + 0.5) * image_region.height / pixel_height
+            row = bisect_right(ys, local_y) - 1
+            y_cells.append(row if 0 <= row < matrix.rows and local_y < ys[row + 1] else -1)
+
+        _report(
+            progress,
+            35,
+            f"Mapping exact cell colors at {pixel_width:,} x {pixel_height:,} pixels",
+        )
+        image = QImage(pixel_width, pixel_height, QImage.Format.Format_ARGB32)
+        image.fill(0)
+        bits = image.bits()
+        stride = image.bytesPerLine()
+        row_cache: dict[int, bytes] = {}
+        for target_y, source_row in enumerate(y_cells):
+            if source_row not in row_cache:
+                values = array(
+                    "I",
+                    (
+                        0 if source_row < 0 or source_column < 0
+                        else matrix.colors[source_row][source_column]
+                        for source_column in x_cells
+                    ),
+                )
+                row_cache[source_row] = values.tobytes()
+            start = target_y * stride
+            bits[start : start + pixel_width * 4] = row_cache[source_row]
+            if target_y and target_y % 256 == 0:
+                _report(progress, 35 + round(35 * target_y / pixel_height), "Writing exact cell colors")
+
+        _report(progress, 75, "Compressing lossless exact-color PNG")
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not image.save(buffer, "PNG", 9):
+            raise RuntimeError("Could not encode the exact-cell heatmap PNG")
+        _report(progress, 100, "Exact-color PNG ready; no interpolation or edge blending")
+        return bytes(buffer.data())
+
     def _raster_png(
         self,
         selected_ids: set[str] | frozenset[str],
         region: Rect,
         dpi: int,
         progress: ProgressCallback | None = None,
-    ) -> tuple[bytes, int, int]:
+    ) -> tuple[bytes, int, int, str]:
         page_width_in = length_to_inches(self.root.get("width"), self.view_box.width)
         page_height_in = length_to_inches(self.root.get("height"), self.view_box.height)
         pixel_width = max(1, round(dpi * page_width_in * region.width / self.view_box.width))
@@ -754,6 +980,13 @@ class SvgDocument:
                 f"The selected region would create a {pixel_width} x {pixel_height} image. "
                 "Reduce the DPI or draw a tighter rectangle."
             )
+        _report(progress, 5, "Checking for an exact, non-interpolated Origin cell matrix")
+        matrix = self._exact_cell_matrix(selected_ids)
+        if matrix is not None:
+            png = self._exact_matrix_png(matrix, region, pixel_width, pixel_height, progress)
+            return png, pixel_width, pixel_height, "exact-cell-matrix"
+
+        _report(progress, 8, "Irregular selection; using the compatible SVG renderer")
         _report(progress, 10, "Building the selected-object render copy")
         selected_root = self._selected_only_root(selected_ids, region, pixel_width, pixel_height)
         _flatten_nested_svgs_for_qt(selected_root)
@@ -775,7 +1008,7 @@ class SvgDocument:
         if not image.save(buffer, "PNG", 9):
             raise RuntimeError("Could not encode the heatmap PNG")
         _report(progress, 100, "Embedded PNG ready")
-        return bytes(buffer.data()), pixel_width, pixel_height
+        return bytes(buffer.data()), pixel_width, pixel_height, "svg-renderer"
 
     @staticmethod
     def _clone_parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
@@ -789,7 +1022,14 @@ class SvgDocument:
         path.reverse()
         return path
 
-    def _insert_raster(self, root: ET.Element, selected_ids: frozenset[str], png: bytes, region: Rect) -> None:
+    def _insert_raster(
+        self,
+        root: ET.Element,
+        selected_ids: frozenset[str],
+        png: bytes,
+        region: Rect,
+        rasterization_method: str = "svg-renderer",
+    ) -> None:
         id_map = {e.get("id"): e for e in root.iter() if e.get("id")}
         selected = [id_map[uid] for uid in selected_ids if uid in id_map]
         if not selected:
@@ -840,6 +1080,7 @@ class SvgDocument:
         # PowerPoint/Illustrator compatibility while storing the PNG only once.
         image_element.set(f"{{{XLINK_NS}}}href", "data:image/png;base64," + base64.b64encode(png).decode("ascii"))
         image_element.set("data-origin-hybridizer", "heatmap-raster")
+        image_element.set("data-origin-rasterization", rasterization_method)
         if image_transform is not None and any(abs(a - b) > 1e-12 for a, b in zip(image_transform, IDENTITY)):
             image_element.set("transform", matrix_string(image_transform))
         lca.insert(insert_at, image_element)
@@ -873,7 +1114,7 @@ class SvgDocument:
     ) -> tuple[bytes, int, int]:
         if not detection.element_ids:
             raise ValueError("No heatmap objects are selected")
-        png, pixel_width, pixel_height = self._raster_png(
+        png, pixel_width, pixel_height, rasterization_method = self._raster_png(
             detection.element_ids,
             detection.rect,
             dpi,
@@ -881,8 +1122,14 @@ class SvgDocument:
         )
         _report(progress, 85, "Replacing vector cells with the embedded image")
         output_root = deepcopy(self.root)
-        self._insert_raster(output_root, detection.element_ids, png, detection.rect)
-        output_root.set("data-origin-hybridizer", "1.3.0")
+        self._insert_raster(
+            output_root,
+            detection.element_ids,
+            png,
+            detection.rect,
+            rasterization_method,
+        )
+        output_root.set("data-origin-hybridizer", __version__)
         result = self._serialize(output_root)
         _report(progress, 94, "Verifying size, live text, and retained vectors")
         self._verify_hybrid_output(result, detection)
@@ -953,6 +1200,14 @@ class SvgDocument:
         _report(progress, 98, "Writing hybrid SVG to disk")
         output_path.write_bytes(svg_bytes)
         _report(progress, 100, "Hybrid SVG written")
+        output_root = ET.fromstring(svg_bytes)
+        heatmap_image = next(
+            element
+            for element in output_root.iter()
+            if local_name(element.tag) == "image"
+            and element.get("data-origin-hybridizer") == "heatmap-raster"
+        )
+        method = heatmap_image.get("data-origin-rasterization", "svg-renderer")
         return ExportStats(
             output_path=output_path,
             rasterized_elements=detection.count,
@@ -963,6 +1218,11 @@ class SvgDocument:
             region=detection.rect,
             editable_text_objects=self.classification_summary(detection).editable_text_objects,
             editable_vector_objects=self.classification_summary(detection).editable_vector_objects,
+            rasterization_method=(
+                "Exact Origin cells (no interpolation)"
+                if method == "exact-cell-matrix"
+                else "Compatible SVG renderer"
+            ),
             verification_message=(
                 "Verified: size, text, and retained vector coordinates/styles match the source SVG"
             ),

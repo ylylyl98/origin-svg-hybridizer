@@ -108,6 +108,7 @@ class HybridizerTests(unittest.TestCase):
             root = ET.fromstring(output_bytes)
             images = [e for e in root.iter() if local_name(e.tag) == "image"]
             self.assertEqual(len(images), 1)
+            self.assertEqual(images[0].get("data-origin-rasterization"), "exact-cell-matrix")
             self.assertIsNone(images[0].get("transform"), "PowerPoint-safe nested images should not need a transform")
             self.assertAlmostEqual(float(images[0].get("x", "0")), 200, delta=2)
             self.assertAlmostEqual(float(images[0].get("y", "0")), 120, delta=2)
@@ -119,6 +120,22 @@ class HybridizerTests(unittest.TestCase):
             href = next(value for key, value in images[0].attrib.items() if key.endswith("href"))
             raster = QImage.fromData(base64.b64decode(href.split(",", 1)[1]), "PNG")
             self.assertFalse(raster.isNull())
+            source_colors = {
+                QColor(element.get("fill", "")).rgba()
+                for element in document.root.iter()
+                if element.get("id") in detection.element_ids
+            }
+            raster_colors = {
+                raster.pixelColor(x, y).rgba()
+                for y in range(raster.height())
+                for x in range(raster.width())
+                if raster.pixelColor(x, y).alpha() > 0
+            }
+            self.assertTrue(raster_colors)
+            self.assertTrue(
+                raster_colors <= source_colors,
+                "Exact matrix export must not invent antialiased or interpolated colors",
+            )
             sampled = {
                 raster.pixelColor(x, y).rgba()
                 for y in range(0, raster.height(), max(1, raster.height() // 12))
@@ -165,6 +182,11 @@ class HybridizerTests(unittest.TestCase):
             texts = [e for e in root.iter() if local_name(e.tag) == "text"]
 
             self.assertEqual(len(images), 1)
+            self.assertEqual(
+                images[0].get("data-origin-rasterization"),
+                "svg-renderer",
+                "Overlapping rectangles must use the established compatible fallback",
+            )
             self.assertEqual(len(rects), 1, "Only the original page rectangle should remain")
             self.assertEqual(len(texts), 1)
             self.assertEqual(texts[0].text, "Vbg (V)")

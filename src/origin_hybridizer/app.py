@@ -766,6 +766,7 @@ class MainWindow(QMainWindow):
         self.result_label.setText(
             f"Saved {stats.output_path.name}\n"
             f"Heatmap: {stats.raster_width:,} x {stats.raster_height:,} px\n"
+            f"Raster method: {stats.rasterization_method}\n"
             f"Rasterized: {stats.rasterized_elements:,} objects\n"
             f"Editable: {stats.editable_text_objects:,} text + {stats.editable_vector_objects:,} vectors\n"
             f"Safety check: passed\n"
@@ -837,7 +838,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Origin SVG Hybridizer",
-            "Origin SVG Hybridizer 1.3.0\n\n"
+            "Origin SVG Hybridizer 1.4.0\n\n"
             "Replaces only dense heatmap primitives with an embedded high-resolution PNG. "
             "Text, axes, ticks, arrows and annotations stay as the original SVG objects.",
         )

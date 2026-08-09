@@ -10,7 +10,7 @@ A small Windows desktop app that converts a large, all-vector Origin heatmap SVG
 
 The app modifies the exported Origin SVG object tree. It does not recreate or redraw the figure.
 
-Version 1.3.0 adds a publication-focused editability policy. Dense heatmap cells are the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. A color-coded review shows the raster area in orange, retained vectors in blue, and live text in green. Rectangle tools can replace the raster choice, add another dense area, or explicitly keep an area editable. Export runs a safety check that the page geometry, SVG text, and retained-vector count match the source.
+Version 1.4.0 recognizes complete Origin cell matrices and converts them directly from their exact SVG fill colors. No polygon-edge antialiasing, color interpolation, smoothing, or newly blended colors are introduced. Dense heatmap cells remain the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. Irregular or partial selections automatically use the established compatible SVG renderer. Export runs a safety check that the page geometry, SVG text, and retained-vector count match the source.
 
 The app also supports Origin exports that wrap plot objects in a nested SVG viewport, including correct previews, visible embedded colormaps, PowerPoint-compatible image placement, non-empty PDF output, and PowerPoint-based EMF conversion when Inkscape is unavailable. Large-file loading, detection, manual selection, preview generation, and export run in background workers so Windows does not mark the app as unresponsive. A 0-100% progress window reports the current processing stage and continuously updated elapsed time.
 
@@ -70,7 +70,7 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, open the workflow run and download the `origin-svg-hybridizer-windows-v1.3.0` artifact. This provides the same standalone application as a ZIP without requiring local build tools.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, open the workflow run and download the `origin-svg-hybridizer-windows-v1.4.0` artifact. This provides the same standalone application as a ZIP without requiring local build tools.
 
 ## How automatic detection works
 
@@ -78,7 +78,7 @@ The detector looks for nested SVG groups containing many repeated, filled vector
 
 For the supplied Origin figure, the automatic result rasterizes 10,206 heatmap polygons while keeping 39 text objects and 166 other vector objects editable. The 122 polygon segments that form the color-bar ramp remain vector because that ramp is already compact; its outline, ticks, numbers, and title also remain editable.
 
-Only the selected filled primitives are rendered to a transparent PNG. The PNG is inserted at the original stacking position, and only those source primitives are removed. Everything else comes directly from the Origin SVG.
+When the selected primitives form a complete Origin matrix, the app reads the exact color of every cell and writes a lossless PNG without rasterizing shared polygon edges. Every opaque bitmap pixel is assigned to one original cell, so the export introduces no interpolation or antialiased seam colors. If the selection is irregular, incomplete, transformed, overlapping, or uses complex SVG painting, the app safely falls back to its general SVG renderer. The PNG is inserted at the original stacking position, and only the selected source primitives are removed. Everything else comes directly from the Origin SVG.
 
 The manual rectangle is useful when:
 
@@ -93,7 +93,7 @@ The manual rectangle is useful when:
 
 The app refuses extremely large raster allocations and asks for a tighter rectangle or lower DPI instead of exhausting system memory.
 
-SVGs around 30 MB or larger can still take several seconds to parse and preview. Version 1.3.0 displays staged progress for file reading, XML parsing, object-ID preparation, geometry indexing, heatmap detection, review rendering, rasterization, PNG compression, safety verification, and final output. Wait for it to reach 100% rather than opening the same file again.
+SVGs around 30 MB or larger can still take several seconds to parse and preview. Version 1.4.0 displays staged progress for file reading, XML parsing, object-ID preparation, geometry indexing, exact-matrix verification, cell-color mapping, PNG compression, safety verification, and final output. Wait for it to reach 100% rather than opening the same file again.
 
 ## Optional PDF
 
@@ -106,7 +106,7 @@ $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The tests generate both ordinary and nested-viewport Origin-style vector heatmaps, verify automatic and manual selection, confirm that the heatmap cells are replaced by one embedded PNG, confirm that text and axes remain SVG objects, and validate the exported SVG with Qt's renderer.
+The tests generate both ordinary and nested-viewport Origin-style vector heatmaps, verify automatic and manual selection, confirm that complete matrices introduce no antialiased or interpolated colors, exercise the compatible fallback for irregular selections, confirm that text and axes remain SVG objects, and validate the exported SVG with Qt's renderer.
 
 ## Troubleshooting
 
