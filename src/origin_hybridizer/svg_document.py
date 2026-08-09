@@ -738,6 +738,48 @@ class SvgDocument:
         root.set("preserveAspectRatio", "none")
         return root
 
+    def _dense_regular_grid_render_size(
+        self,
+        selected_ids: set[str] | frozenset[str],
+        region: Rect,
+    ) -> tuple[int, int, int, int] | None:
+        """Return a one-sample-per-cell render size for a dense axis-aligned grid.
+
+        Origin image plots are commonly exported as one polygon per color-grid
+        sample. Rendering a 1024-column grid directly into a large PNG preserves
+        the narrow polygon strips, which can form moire when PowerPoint scales
+        the figure. Reconstructing the regular sample grid first and applying a
+        single smooth enlargement matches Origin's bitmap export behavior.
+        """
+        if len(selected_ids) < 4096:
+            return None
+        infos = [self.info_by_id[uid] for uid in selected_ids]
+        if any(info.tag not in {"polygon", "rect"} for info in infos):
+            return None
+        x_centers = sorted({round(info.bbox.center[0], 5) for info in infos})
+        y_centers = sorted({round(info.bbox.center[1], 5) for info in infos})
+        columns = len(x_centers)
+        rows = len(y_centers)
+        if columns < 2 or rows < 2 or columns * rows != len(infos):
+            return None
+        # Use the interpolated grid path only for genuinely dense meshes. The
+        # earlier 126 x 81 figures retain their established rendering path.
+        if max(columns, rows) < 512:
+            return None
+        step_x = (x_centers[-1] - x_centers[0]) / (columns - 1)
+        step_y = (y_centers[-1] - y_centers[0]) / (rows - 1)
+        if step_x <= 0 or step_y <= 0:
+            return None
+        differences_x = [b - a for a, b in zip(x_centers, x_centers[1:])]
+        differences_y = [b - a for a, b in zip(y_centers, y_centers[1:])]
+        if any(abs(value - step_x) > step_x * 0.5 for value in differences_x):
+            return None
+        if any(abs(value - step_y) > step_y * 0.5 for value in differences_y):
+            return None
+        visible_columns = min(columns + 2, max(2, round(region.width / step_x)))
+        visible_rows = min(rows + 2, max(2, round(region.height / step_y)))
+        return visible_columns, visible_rows, columns, rows
+
     def _raster_png(
         self,
         selected_ids: set[str] | frozenset[str],
@@ -754,22 +796,24 @@ class SvgDocument:
                 f"The selected region would create a {pixel_width} x {pixel_height} image. "
                 "Reduce the DPI or draw a tighter rectangle."
             )
-        # A dense Origin colormap can contain more source columns than are
-        # visible at normal figure size. Rendering every crisp-edged polygon
-        # directly at the final bitmap size lets repeated cell boundaries alias
-        # into moire/interference bands. Render at 2x without per-edge
-        # antialiasing, then perform one high-quality downsample to the requested
-        # publication resolution. Limit supersampling for unusually large
-        # allocations; those already have enough target pixels to avoid this
-        # failure mode.
-        target_pixels = pixel_width * pixel_height
-        supersample = 2 if target_pixels <= 25_000_000 else 1
-        render_width = pixel_width * supersample
-        render_height = pixel_height * supersample
+        grid_render = self._dense_regular_grid_render_size(selected_ids, region)
+        if grid_render is not None:
+            render_width, render_height, grid_columns, grid_rows = grid_render
+            supersample = 1
+        else:
+            # Irregular heatmaps retain the high-resolution vector rendering
+            # path. Supersampling avoids seams without changing final DPI.
+            target_pixels = pixel_width * pixel_height
+            supersample = 2 if target_pixels <= 25_000_000 else 1
+            render_width = pixel_width * supersample
+            render_height = pixel_height * supersample
         _report(progress, 10, "Building the selected-object render copy")
         selected_root = self._selected_only_root(selected_ids, region, render_width, render_height)
         _flatten_nested_svgs_for_qt(selected_root)
-        _report(progress, 30, f"Rendering seam-free heatmap at {render_width:,} × {render_height:,} pixels")
+        if grid_render is not None:
+            _report(progress, 30, f"Reconstructing the {grid_columns:,} × {grid_rows:,} Origin color grid")
+        else:
+            _report(progress, 30, f"Rendering seam-free heatmap at {render_width:,} × {render_height:,} pixels")
         renderer = QSvgRenderer(QByteArray(self._serialize(selected_root)))
         if not renderer.isValid():
             raise RuntimeError("The selected heatmap objects could not be rendered")
@@ -781,7 +825,15 @@ class SvgDocument:
             renderer.render(painter, QRectF(0, 0, render_width, render_height))
         finally:
             painter.end()
-        if supersample > 1:
+        if grid_render is not None:
+            _report(progress, 70, f"Interpolating the color grid to {pixel_width:,} × {pixel_height:,} pixels")
+            image = image.scaled(
+                pixel_width,
+                pixel_height,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        elif supersample > 1:
             _report(progress, 70, f"Downsampling cleanly to {pixel_width:,} x {pixel_height:,} pixels")
             image = image.scaled(
                 pixel_width,
@@ -906,7 +958,7 @@ class SvgDocument:
         _report(progress, 85, "Replacing vector cells with the embedded image")
         output_root = deepcopy(self.root)
         self._insert_raster(output_root, detection.element_ids, png, detection.rect)
-        output_root.set("data-origin-hybridizer", "1.3.2")
+        output_root.set("data-origin-hybridizer", "1.3.3")
         result = self._serialize(output_root)
         _report(progress, 94, "Verifying size, live text, and retained vectors")
         self._verify_hybrid_output(result, detection)

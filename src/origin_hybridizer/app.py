@@ -837,7 +837,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Origin SVG Hybridizer",
-            "Origin SVG Hybridizer 1.3.2\n\n"
+            "Origin SVG Hybridizer 1.3.3\n\n"
             "Replaces only dense heatmap primitives with an embedded high-resolution PNG. "
             "Text, axes, ticks, arrows and annotations stay as the original SVG objects.",
         )
