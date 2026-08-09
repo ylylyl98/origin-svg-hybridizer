@@ -22,8 +22,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QSplitter,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -66,6 +68,11 @@ QSpinBox { background: white; border: 1px solid #cbd5df; border-radius: 6px; pad
 QLabel#muted { color: #637381; }
 QLabel#fileName { font-weight: 650; color: #172b4d; }
 QFrame#summaryCard { background: #eef5ff; border: 1px solid #ccdef9; border-radius: 8px; }
+QScrollArea#sidebarScroll, QWidget#sidebarPanel, QWidget#sidebarScrollContent {
+    border: none; background: transparent;
+}
+QSplitter::handle { background: #d9e0e7; border-radius: 2px; }
+QSplitter::handle:hover { background: #aebdca; }
 QStatusBar { background: white; border-top: 1px solid #d9e0e7; }
 """
 
@@ -105,7 +112,7 @@ class SvgCanvas(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setAcceptDrops(True)
-        self.setMinimumSize(620, 500)
+        self.setMinimumSize(360, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.renderer: QSvgRenderer | None = None
         self.preview_image: QImage | None = None
@@ -294,8 +301,16 @@ class MainWindow(QMainWindow):
         icon_path = application_icon_path()
         if icon_path.is_file():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.resize(1180, 760)
-        self.setMinimumSize(960, 650)
+        self.setMinimumSize(760, 520)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(
+                min(1180, max(760, round(available.width() * 0.88))),
+                min(760, max(520, round(available.height() * 0.86))),
+            )
+        else:
+            self.resize(1180, 760)
         self.setAcceptDrops(True)
 
         self.canvas = SvgCanvas()
@@ -312,11 +327,31 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(root)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(14)
-        layout.addWidget(self.canvas, 1)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(6)
+        self.splitter.addWidget(self.canvas)
 
         panel = QWidget()
-        panel.setFixedWidth(325)
-        sidebar = QVBoxLayout(panel)
+        panel.setObjectName("sidebarPanel")
+        panel.setMinimumWidth(300)
+        panel.setMaximumWidth(440)
+        panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.sidebar_panel = panel
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(10)
+
+        self.sidebar_scroll = QScrollArea()
+        self.sidebar_scroll.setObjectName("sidebarScroll")
+        self.sidebar_scroll.setWidgetResizable(True)
+        self.sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_content = QWidget()
+        scroll_content.setObjectName("sidebarScrollContent")
+        scroll_content.setMinimumWidth(280)
+        sidebar = QVBoxLayout(scroll_content)
         sidebar.setContentsMargins(0, 0, 0, 0)
         sidebar.setSpacing(10)
 
@@ -338,6 +373,8 @@ class MainWindow(QMainWindow):
         self.file_name = QLabel("No file selected")
         self.file_name.setObjectName("fileName")
         self.file_name.setWordWrap(True)
+        self.file_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.file_name.setMaximumHeight(self.file_name.fontMetrics().lineSpacing() * 2 + 8)
         file_layout.addWidget(self.open_button)
         file_layout.addWidget(self.file_name)
         sidebar.addWidget(file_group)
@@ -419,8 +456,10 @@ class MainWindow(QMainWindow):
             emf_note = "EMF needs Inkscape or desktop PowerPoint"
         self.inkscape_note = QLabel(emf_note)
         self.inkscape_note.setObjectName("muted")
+        self.inkscape_note.setWordWrap(True)
+        self.inkscape_note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         export_layout.addWidget(self.inkscape_note)
-        sidebar.addWidget(export_group)
+        self.export_group = export_group
 
         self.result_card = QFrame()
         self.result_card.setObjectName("summaryCard")
@@ -431,7 +470,15 @@ class MainWindow(QMainWindow):
         self.result_card.hide()
         sidebar.addWidget(self.result_card)
         sidebar.addStretch()
-        layout.addWidget(panel)
+
+        self.sidebar_scroll.setWidget(scroll_content)
+        panel_layout.addWidget(self.sidebar_scroll, 1)
+        panel_layout.addWidget(export_group, 0)
+        self.splitter.addWidget(panel)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([820, 340])
+        layout.addWidget(self.splitter, 1)
         return root
 
     def _build_menu(self) -> None:
@@ -501,6 +548,7 @@ class MainWindow(QMainWindow):
             self.canvas.set_preview_image(preview, document.view_box)
             self.canvas.set_overlay(None)
             self.file_name.setText(source_path.name)
+            self.file_name.setToolTip(str(source_path))
             self.result_card.hide()
             self._set_document_controls(True)
             if detection is not None:
@@ -522,11 +570,13 @@ class MainWindow(QMainWindow):
 
         def load_failed(message: str) -> None:
             self.file_name.setText("Could not load SVG")
+            self.file_name.setToolTip(str(source_path))
             self.statusBar().showMessage("SVG loading failed")
             QMessageBox.critical(self, "Could not open SVG", message)
 
         size_mb = source_path.stat().st_size / 1024 / 1024 if source_path.is_file() else 0
         self.file_name.setText(f"Loading {source_path.name}...")
+        self.file_name.setToolTip(str(source_path))
         self.statusBar().showMessage(f"Reading and indexing {size_mb:.1f} MB SVG in the background...")
         self._start_background(
             "Loading and analyzing the SVG...",
@@ -652,6 +702,7 @@ class MainWindow(QMainWindow):
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setCancelButton(None)
         dialog.setMinimumDuration(0)
+        dialog.setMinimumWidth(440)
         dialog.setLabelText(message + "\nLarge Origin files may take a little while; the app will remain responsive.")
         dialog.setValue(0)
         dialog.show()
@@ -773,6 +824,7 @@ class MainWindow(QMainWindow):
             f"Output size: {stats.output_bytes / 1024 / 1024:.2f} MB ({ratio:.0%} of source)"
         )
         self.result_card.show()
+        QTimer.singleShot(0, lambda: self.sidebar_scroll.ensureWidgetVisible(self.result_card, 0, 16))
 
     def export_secondary(self, export_type: str) -> None:
         if not self._require_ready():
@@ -838,7 +890,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Origin SVG Hybridizer",
-            "Origin SVG Hybridizer 1.4.0\n\n"
+            "Origin SVG Hybridizer 1.4.1\n\n"
             "Replaces only dense heatmap primitives with an embedded high-resolution PNG. "
             "Text, axes, ticks, arrows and annotations stay as the original SVG objects.",
         )

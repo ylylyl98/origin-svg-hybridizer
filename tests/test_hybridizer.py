@@ -6,12 +6,13 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
-from PySide6.QtCore import QByteArray, QRectF
+from PySide6.QtCore import QByteArray, QPoint, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication
 
 from origin_hybridizer.geometry import Rect
+from origin_hybridizer.app import MainWindow
 from origin_hybridizer.svg_document import SvgDocument, local_name, qt_preview_bytes
 
 
@@ -247,6 +248,57 @@ class HybridizerTests(unittest.TestCase):
             self.assertLess(reduced.count, expected_cells)
             restored = document.adjust_detection(reduced, left_half, "add")
             self.assertEqual(restored.count, expected_cells)
+
+
+class ResponsiveUiTests(unittest.TestCase):
+    def test_export_footer_stays_visible_when_sidebar_content_overflows(self) -> None:
+        window = MainWindow()
+        try:
+            window.resize(760, 520)
+            window.result_label.setText(
+                "Long export result information " * 120
+            )
+            window.result_card.show()
+            window.show()
+            APP.processEvents()
+
+            self.assertGreater(
+                window.sidebar_scroll.verticalScrollBar().maximum(),
+                0,
+                "Overflowing settings should activate the sidebar scrollbar",
+            )
+            self.assertGreaterEqual(window.sidebar_panel.width(), 300)
+            central = window.centralWidget()
+            self.assertIsNotNone(central)
+            for button in (window.svg_button, window.emf_button, window.pdf_button):
+                self.assertTrue(button.isVisible())
+                top_left = button.mapTo(central, QPoint(0, 0))
+                bottom_right = button.mapTo(
+                    central,
+                    QPoint(max(0, button.width() - 1), max(0, button.height() - 1)),
+                )
+                self.assertTrue(central.rect().contains(top_left))
+                self.assertTrue(central.rect().contains(bottom_right))
+        finally:
+            window.close()
+            APP.processEvents()
+
+    def test_sidebar_can_be_resized_without_collapsing_preview(self) -> None:
+        window = MainWindow()
+        try:
+            window.resize(900, 620)
+            window.show()
+            APP.processEvents()
+            window.splitter.setSizes([520, 340])
+            APP.processEvents()
+
+            preview_width, sidebar_width = window.splitter.sizes()
+            self.assertGreaterEqual(preview_width, 360)
+            self.assertGreaterEqual(sidebar_width, 300)
+            self.assertLessEqual(sidebar_width, 440)
+        finally:
+            window.close()
+            APP.processEvents()
 
 
 if __name__ == "__main__":

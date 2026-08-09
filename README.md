@@ -10,19 +10,27 @@ A small Windows desktop app that converts a large, all-vector Origin heatmap SVG
 
 The app modifies the exported Origin SVG object tree. It does not recreate or redraw the figure.
 
-Version 1.4.0 recognizes complete Origin cell matrices and converts them directly from their exact SVG fill colors. No polygon-edge antialiasing, color interpolation, smoothing, or newly blended colors are introduced. Dense heatmap cells remain the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. Irregular or partial selections automatically use the established compatible SVG renderer. Export runs a safety check that the page geometry, SVG text, and retained-vector count match the source.
+## Download the Windows app
+
+**[Download the latest Windows version from GitHub Releases](https://github.com/ylylyl98/origin-svg-hybridizer/releases/latest)**
+
+1. Open the link above and expand **Assets** if necessary.
+2. Download `Origin-SVG-Hybridizer-Windows-vX.Y.Z.zip` - do **not** download the automatically generated "Source code" ZIP.
+3. Right-click the downloaded ZIP and choose **Extract All**.
+4. Open the extracted `Origin SVG Hybridizer` folder and run `Origin SVG Hybridizer.exe`.
+
+No Python installation is required for the downloadable Windows app. Keep the complete extracted folder together because the `.exe` uses the included runtime files. If Windows SmartScreen appears for an unsigned community application, choose **More info > Run anyway** only after confirming that the download came from this repository.
+
+Version 1.4.1 adds a resizable preview/sidebar divider, a scrollable settings area, screen-aware window sizing, and an always-visible export footer so controls remain reachable on smaller screens and at higher Windows display scaling. It also recognizes complete Origin cell matrices and converts them directly from their exact SVG fill colors. No polygon-edge antialiasing, color interpolation, smoothing, or newly blended colors are introduced. Dense heatmap cells remain the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. Irregular or partial selections automatically use the established compatible SVG renderer. Export runs a safety check that the page geometry, SVG text, and retained-vector count match the source.
 
 The app also supports Origin exports that wrap plot objects in a nested SVG viewport, including correct previews, visible embedded colormaps, PowerPoint-compatible image placement, non-empty PDF output, and PowerPoint-based EMF conversion when Inkscape is unavailable. Large-file loading, detection, manual selection, preview generation, and export run in background workers so Windows does not mark the app as unresponsive. A 0-100% progress window reports the current processing stage and continuously updated elapsed time.
 
-## Quick start on Windows
+## Use the app
 
-1. Install 64-bit [Python 3.10 or newer](https://www.python.org/downloads/windows/). During setup, enable **Add Python to PATH**.
-2. Double-click `run_app.bat`.
-3. On the first run, wait while the app creates its private environment and installs PySide6. Later starts are immediate.
-4. Drop an Origin `.svg` file onto the preview, or click **Open SVG**.
-5. Review the editability colors: **orange** is the raster area, **blue** is retained vector artwork, and **green** is live SVG text.
-6. If the automatic choice needs adjustment, enable **Adjust with a rectangle**, choose **Replace raster selection**, **Add area to raster**, or **Keep area editable**, then drag over the relevant area.
-7. Leave **Raster DPI** at 600 for publication work, then click **Export hybrid SVG**.
+1. Drop an Origin `.svg` file onto the preview, or click **Open SVG**.
+2. Review the editability colors: **orange** is the raster area, **blue** is retained vector artwork, and **green** is live SVG text.
+3. If the automatic choice needs adjustment, enable **Adjust with a rectangle**, choose **Replace raster selection**, **Add area to raster**, or **Keep area editable**, then drag over the relevant area.
+4. Leave **Raster DPI** at 600 for publication work, then click **Export hybrid SVG**.
 
 The source SVG remains unchanged. The default output name ends in `_hybrid.svg`.
 
@@ -44,9 +52,9 @@ EMF export uses the free desktop version of [Inkscape](https://inkscape.org/rele
 
 The EMF contains the same embedded raster heatmap plus vector artwork. EMF text handling depends on the installed font and Inkscape version, so the SVG should remain the editable master.
 
-## Manual setup and run
+## Run from source for development
 
-Open PowerShell in this folder and run:
+To edit the code or run directly from Python, install 64-bit [Python 3.10 or newer](https://www.python.org/downloads/windows/), open PowerShell in this folder, and run:
 
 ```powershell
 py -m venv .venv
@@ -70,7 +78,7 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, open the workflow run and download the `origin-svg-hybridizer-windows-v1.4.0` artifact. This provides the same standalone application as a ZIP without requiring local build tools.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. Tagged versions such as `v1.4.1` are published automatically on the repository's [Releases page](https://github.com/ylylyl98/origin-svg-hybridizer/releases), where users can download the Windows ZIP without installing build tools. Ordinary development builds remain available from the workflow's artifact section for 30 days.
 
 ## How automatic detection works
 
@@ -93,7 +101,7 @@ The manual rectangle is useful when:
 
 The app refuses extremely large raster allocations and asks for a tighter rectangle or lower DPI instead of exhausting system memory.
 
-SVGs around 30 MB or larger can still take several seconds to parse and preview. Version 1.4.0 displays staged progress for file reading, XML parsing, object-ID preparation, geometry indexing, exact-matrix verification, cell-color mapping, PNG compression, safety verification, and final output. Wait for it to reach 100% rather than opening the same file again.
+SVGs around 30 MB or larger can still take several seconds to parse and preview. Version 1.4.1 displays staged progress for file reading, XML parsing, object-ID preparation, geometry indexing, exact-matrix verification, cell-color mapping, PNG compression, safety verification, and final output. Wait for it to reach 100% rather than opening the same file again.
 
 ## Optional PDF
 
