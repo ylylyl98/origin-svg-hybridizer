@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -52,7 +52,7 @@ jobs:
           -DestinationPath "Origin-SVG-Hybridizer-Windows-v1.3.1.zip"
 
       - name: Upload Windows ZIP
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: origin-svg-hybridizer-windows-v1.3.1
           path: Origin-SVG-Hybridizer-Windows-v1.3.1.zip
