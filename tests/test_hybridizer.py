@@ -165,6 +165,7 @@ class HybridizerTests(unittest.TestCase):
             texts = [e for e in root.iter() if local_name(e.tag) == "text"]
 
             self.assertEqual(len(images), 1)
+            self.assertEqual(images[0].get("image-rendering"), "optimizeQuality")
             self.assertEqual(len(rects), 1, "Only the original page rectangle should remain")
             self.assertEqual(len(texts), 1)
             self.assertEqual(texts[0].text, "Vbg (V)")

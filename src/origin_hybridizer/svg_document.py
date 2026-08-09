@@ -11,7 +11,7 @@ import re
 from typing import Callable
 import xml.etree.ElementTree as ET
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QRectF
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
@@ -754,21 +754,41 @@ class SvgDocument:
                 f"The selected region would create a {pixel_width} x {pixel_height} image. "
                 "Reduce the DPI or draw a tighter rectangle."
             )
+        # A dense Origin colormap can contain more source columns than are
+        # visible at normal figure size. Rendering every crisp-edged polygon
+        # directly at the final bitmap size lets repeated cell boundaries alias
+        # into moire/interference bands. Render at 2x without per-edge
+        # antialiasing, then perform one high-quality downsample to the requested
+        # publication resolution. Limit supersampling for unusually large
+        # allocations; those already have enough target pixels to avoid this
+        # failure mode.
+        target_pixels = pixel_width * pixel_height
+        supersample = 2 if target_pixels <= 25_000_000 else 1
+        render_width = pixel_width * supersample
+        render_height = pixel_height * supersample
         _report(progress, 10, "Building the selected-object render copy")
-        selected_root = self._selected_only_root(selected_ids, region, pixel_width, pixel_height)
+        selected_root = self._selected_only_root(selected_ids, region, render_width, render_height)
         _flatten_nested_svgs_for_qt(selected_root)
-        _report(progress, 30, f"Rendering heatmap at {pixel_width:,} × {pixel_height:,} pixels")
+        _report(progress, 30, f"Rendering seam-free heatmap at {render_width:,} × {render_height:,} pixels")
         renderer = QSvgRenderer(QByteArray(self._serialize(selected_root)))
         if not renderer.isValid():
             raise RuntimeError("The selected heatmap objects could not be rendered")
-        image = QImage(pixel_width, pixel_height, QImage.Format.Format_ARGB32_Premultiplied)
+        image = QImage(render_width, render_height, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(QColor(0, 0, 0, 0))
         painter = QPainter(image)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         try:
-            renderer.render(painter, QRectF(0, 0, pixel_width, pixel_height))
+            renderer.render(painter, QRectF(0, 0, render_width, render_height))
         finally:
             painter.end()
+        if supersample > 1:
+            _report(progress, 70, f"Downsampling cleanly to {pixel_width:,} x {pixel_height:,} pixels")
+            image = image.scaled(
+                pixel_width,
+                pixel_height,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         _report(progress, 80, "Compressing embedded PNG")
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -836,6 +856,10 @@ class SvgDocument:
         image_element.set("width", f"{image_region.width:.12g}")
         image_element.set("height", f"{image_region.height:.12g}")
         image_element.set("preserveAspectRatio", "none")
+        # Request high-quality resampling when PowerPoint, Illustrator, or
+        # another SVG consumer displays the embedded 600-dpi bitmap at a
+        # different size.
+        image_element.set("image-rendering", "optimizeQuality")
         # Origin exports SVG 1.1. Use its native xlink form for the broadest
         # PowerPoint/Illustrator compatibility while storing the PNG only once.
         image_element.set(f"{{{XLINK_NS}}}href", "data:image/png;base64," + base64.b64encode(png).decode("ascii"))
@@ -882,7 +906,7 @@ class SvgDocument:
         _report(progress, 85, "Replacing vector cells with the embedded image")
         output_root = deepcopy(self.root)
         self._insert_raster(output_root, detection.element_ids, png, detection.rect)
-        output_root.set("data-origin-hybridizer", "1.3.1")
+        output_root.set("data-origin-hybridizer", "1.3.2")
         result = self._serialize(output_root)
         _report(progress, 94, "Verifying size, live text, and retained vectors")
         self._verify_hybrid_output(result, detection)
