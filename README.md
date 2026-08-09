@@ -10,9 +10,7 @@ A small Windows desktop app that converts a large, all-vector Origin heatmap SVG
 
 The app modifies the exported Origin SVG object tree. It does not recreate or redraw the figure.
 
-Version 1.3.3 uses one publication-quality export path. Dense heatmap cells are the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. A color-coded review shows the raster area in orange, retained vectors in blue, and live text in green. Rectangle tools can replace the raster choice, add another dense area, or explicitly keep an area editable. Every export runs the full safety check that the page geometry, SVG text, retained-vector count, coordinates, colors, line widths, and styles match the source.
-
-Version 1.3.3 also prevents moire/interference patterns in very dense regular Origin meshes. It recognizes the original color grid (for example, 1024 × 141 samples), reconstructs it without polygon-edge seams, and interpolates it once to the final 600-dpi bitmap—the same visual model used by Origin's smooth PNG export. Irregular heatmaps retain the high-resolution vector-rendering fallback. The final DPI, page size, source colors, live text, and retained vectors are not reduced or changed.
+Version 1.3.1 uses one publication-quality export path. Dense heatmap cells are the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. A color-coded review shows the raster area in orange, retained vectors in blue, and live text in green. Rectangle tools can replace the raster choice, add another dense area, or explicitly keep an area editable. Every export runs the full safety check that the page geometry, SVG text, retained-vector count, coordinates, colors, line widths, and styles match the source.
 
 The app also supports Origin exports that wrap plot objects in a nested SVG viewport, including correct previews, visible embedded colormaps, PowerPoint-compatible image placement, non-empty PDF output, and PowerPoint-based EMF conversion when Inkscape is unavailable. Large-file loading, detection, manual selection, preview generation, and export run in background workers so Windows does not mark the app as unresponsive. A 0-100% progress window reports the current processing stage and continuously updated elapsed time.
 
@@ -22,7 +20,7 @@ Most users should download the ready-to-use Windows build. You do **not** need t
 
 1. Open [Build Windows application](https://github.com/ylylyl98/origin-svg-hybridizer/actions/workflows/build-windows.yml?query=branch%3Amain).
 2. Open the newest successful run marked with a green check.
-3. Scroll to **Artifacts** and download `origin-svg-hybridizer-windows-v1.3.3`.
+3. Scroll to **Artifacts** and download `origin-svg-hybridizer-windows-v1.3.1`.
 4. Right-click the downloaded ZIP and select **Extract All**.
 5. Open the extracted `Origin SVG Hybridizer` folder and double-click `Origin SVG Hybridizer.exe`.
 
@@ -87,7 +85,7 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, download the `origin-svg-hybridizer-windows-v1.3.3` artifact using the instructions at the top of this README. This provides the same standalone application as a ZIP without requiring local build tools.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, download the `origin-svg-hybridizer-windows-v1.3.1` artifact using the instructions at the top of this README. This provides the same standalone application as a ZIP without requiring local build tools.
 
 ## How automatic detection works
 

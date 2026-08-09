@@ -49,12 +49,12 @@ jobs:
         run: >
           Compress-Archive
           -Path "dist\Origin SVG Hybridizer\*"
-          -DestinationPath "Origin-SVG-Hybridizer-Windows-v1.3.3.zip"
+          -DestinationPath "Origin-SVG-Hybridizer-Windows-v1.3.1.zip"
 
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v5
         with:
-          name: origin-svg-hybridizer-windows-v1.3.3
-          path: Origin-SVG-Hybridizer-Windows-v1.3.3.zip
+          name: origin-svg-hybridizer-windows-v1.3.1
+          path: Origin-SVG-Hybridizer-Windows-v1.3.1.zip
           if-no-files-found: error
           retention-days: 30

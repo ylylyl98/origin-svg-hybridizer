@@ -74,57 +74,7 @@ def make_nested_origin_svg(path: Path) -> tuple[int, bytes]:
     return cols * rows, data
 
 
-def make_dense_regular_grid_svg(path: Path) -> tuple[int, bytes]:
-    cols, rows = 512, 8
-    parts = [
-        '<svg xmlns="http://www.w3.org/2000/svg" width="6in" height="4in" viewBox="0 0 600 400">',
-        '<rect id="page" x="0" y="0" width="600" height="400" fill="white"/>',
-        '<g id="dense-grid">',
-    ]
-    for row in range(rows):
-        for col in range(cols):
-            x = 80 + col * 0.8
-            y = 100 + row * 18
-            color = "#4169e1" if col % 2 else "#426ae2"
-            parts.append(
-                f'<polygon points="{x},{y} {x + 0.8},{y} {x + 0.8},{y + 18} {x},{y + 18}" '
-                f'fill="{color}" stroke="none" shape-rendering="crispEdges"/>'
-            )
-    parts.extend([
-        '</g>',
-        '<path id="axis" d="M80 100 V244 H490" fill="none" stroke="black"/>',
-        '<text id="label" x="250" y="280">Editable label</text>',
-        '</svg>',
-    ])
-    data = "".join(parts).encode("utf-8")
-    path.write_bytes(data)
-    return cols * rows, data
-
-
 class HybridizerTests(unittest.TestCase):
-    def test_dense_regular_grid_uses_interpolated_publication_raster(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "dense-grid.svg"
-            expected_cells, _ = make_dense_regular_grid_svg(source)
-            document = SvgDocument(source)
-            detection = document.detect_heatmap(minimum_primitives=30)
-            self.assertEqual(detection.count, expected_cells)
-
-            output = Path(directory) / "dense-grid-hybrid.svg"
-            updates = []
-            document.export_hybrid_svg(
-                output,
-                detection,
-                dpi=150,
-                progress=lambda value, message: updates.append((value, message)),
-            )
-            self.assertTrue(any("Reconstructing the 512" in message for _, message in updates))
-            root = ET.fromstring(output.read_bytes())
-            image = next(element for element in root.iter() if local_name(element.tag) == "image")
-            self.assertEqual(image.get("image-rendering"), "optimizeQuality")
-            self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "axis"), None))
-            self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "label"), None))
-
     def test_nested_origin_svg_viewport_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "nested-origin.svg"
@@ -215,7 +165,6 @@ class HybridizerTests(unittest.TestCase):
             texts = [e for e in root.iter() if local_name(e.tag) == "text"]
 
             self.assertEqual(len(images), 1)
-            self.assertEqual(images[0].get("image-rendering"), "optimizeQuality")
             self.assertEqual(len(rects), 1, "Only the original page rectangle should remain")
             self.assertEqual(len(texts), 1)
             self.assertEqual(texts[0].text, "Vbg (V)")
