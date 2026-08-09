@@ -94,6 +94,7 @@ def _style_map(element: ET.Element) -> dict[str, str]:
 
 
 _SVG_NUMBER_RE = re.compile(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
+_URL_FRAGMENT_RE = re.compile(r"url\(\s*['\"]?#([^'\")\s]+)['\"]?\s*\)")
 
 
 def _number(value: str | None, default: float = 0.0) -> float:
@@ -551,6 +552,12 @@ class SvgDocument:
                 "Use Adjust with a rectangle to mark the heatmap manually."
             )
 
+        _report(progress, 8, "Checking Origin plot masks for a complete visible cell matrix")
+        masked_detection = self._detect_masked_cell_matrix(minimum_primitives)
+        if masked_detection is not None:
+            _report(progress, 100, f"Detected {masked_detection.count:,} visible masked heatmap objects")
+            return masked_detection
+
         descendants: dict[ET.Element, list[ElementInfo]] = defaultdict(list)
         depth: dict[ET.Element, int] = {}
         eligible_count = max(1, len(eligible))
@@ -613,6 +620,78 @@ class SvgDocument:
         confidence = min(0.99, 0.62 + 0.32 * min(1.0, len(chosen) / 300.0) + 0.05 * candidate_ratio)
         _report(progress, 100, f"Detected {len(chosen):,} heatmap objects")
         return Detection(rect, frozenset(chosen), "Automatic", confidence)
+
+    def _mask_visible_rect(self, masked_group: ET.Element) -> Rect | None:
+        """Return the visible user-space rectangle from a simple Origin mask."""
+        reference = _URL_FRAGMENT_RE.fullmatch((masked_group.get("mask") or "").strip())
+        if reference is None:
+            return None
+        resource = next(
+            (element for element in self.root.iter() if element.get("id") == reference.group(1)),
+            None,
+        )
+        if resource is None or local_name(resource.tag) != "mask":
+            return None
+        if (resource.get("maskContentUnits") or "userSpaceOnUse") != "userSpaceOnUse":
+            return None
+
+        visible_rects: list[Rect] = []
+        for element in resource.iter():
+            if local_name(element.tag) != "rect":
+                continue
+            style = _style_map(element)
+            fill = style.get("fill", element.get("fill", "black")).strip()
+            if not fill or fill.lower() in {"none", "transparent"} or fill.lower().startswith("url("):
+                continue
+            color = QColor(fill)
+            try:
+                opacity = float(style.get("opacity", element.get("opacity", "1")))
+                fill_opacity = float(style.get("fill-opacity", element.get("fill-opacity", "1")))
+            except ValueError:
+                continue
+            luminance = (color.redF() + color.greenF() + color.blueF()) / 3.0 if color.isValid() else 0.0
+            if luminance * opacity * fill_opacity <= 0.5:
+                continue
+            bbox = _basic_geometry_bbox(element)
+            if bbox is None or bbox.area <= 0:
+                continue
+            visible_rects.append(map_rect(self._cumulative_matrix(element), bbox))
+        if not visible_rects:
+            return None
+        return Rect.union_all(visible_rects).clipped(self.view_box)
+
+    def _detect_masked_cell_matrix(self, minimum_primitives: int) -> Detection | None:
+        """Prefer the complete cell grid that is actually visible through an Origin mask."""
+        candidates: list[tuple[int, float, Detection]] = []
+        for masked_group in self.root.iter():
+            if not masked_group.get("mask"):
+                continue
+            visible_rect = self._mask_visible_rect(masked_group)
+            if visible_rect is None or visible_rect.area <= 0:
+                continue
+            members = [
+                info
+                for info in self.infos
+                if info.uid not in self.protected_info_ids
+                and masked_group in self._ancestors(info.element)
+                and visible_rect.contains_point(*info.bbox.center)
+            ]
+            by_parent: dict[ET.Element, list[ElementInfo]] = defaultdict(list)
+            for info in members:
+                by_parent[info.parent].append(info)
+            for parent_members in by_parent.values():
+                repeated = self._repeated_geometry(parent_members, minimum_primitives)
+                ids = frozenset(info.uid for info in repeated)
+                if len(ids) < minimum_primitives or self._exact_cell_matrix(ids) is None:
+                    continue
+                region = self._tight_region(ids).clipped(visible_rect).clipped(self.view_box)
+                if region.area <= 0:
+                    continue
+                detection = Detection(region, ids, "Automatic", 0.99)
+                candidates.append((len(ids), region.area, detection))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: (item[0], item[1]))[2]
 
     @staticmethod
     def _repeated_geometry(members: list[ElementInfo], minimum: int) -> list[ElementInfo]:
@@ -956,6 +1035,8 @@ class SvgDocument:
             if target_y and target_y % 256 == 0:
                 _report(progress, 35 + round(35 * target_y / pixel_height), "Writing exact cell colors")
 
+        self._require_visible_raster(image)
+
         _report(progress, 75, "Compressing lossless exact-color PNG")
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -963,6 +1044,25 @@ class SvgDocument:
             raise RuntimeError("Could not encode the exact-cell heatmap PNG")
         _report(progress, 100, "Exact-color PNG ready; no interpolation or edge blending")
         return bytes(buffer.data())
+
+    @staticmethod
+    def _require_visible_raster(image: QImage, minimum_coverage: float = 0.02) -> None:
+        """Reject a raster that is almost entirely transparent before it can replace vectors."""
+        pixel_count = image.width() * image.height()
+        if pixel_count <= 0:
+            raise RuntimeError("The selected heatmap produced an empty raster")
+        step = max(1, math.ceil(math.sqrt(pixel_count / 200_000)))
+        visible = sampled = 0
+        for y in range(0, image.height(), step):
+            for x in range(0, image.width(), step):
+                sampled += 1
+                visible += image.pixelColor(x, y).alpha() > 8
+        coverage = visible / max(1, sampled)
+        if coverage < minimum_coverage:
+            raise RuntimeError(
+                f"The selected objects produced a {coverage:.1%}-visible raster. "
+                "Nothing was replaced; use Adjust with a rectangle around the visible heatmap."
+            )
 
     def _raster_png(
         self,
@@ -1002,6 +1102,7 @@ class SvgDocument:
             renderer.render(painter, QRectF(0, 0, pixel_width, pixel_height))
         finally:
             painter.end()
+        self._require_visible_raster(image)
         _report(progress, 80, "Compressing embedded PNG")
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)

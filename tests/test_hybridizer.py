@@ -75,7 +75,80 @@ def make_nested_origin_svg(path: Path) -> tuple[int, bytes]:
     return cols * rows, data
 
 
+def make_masked_overflow_svg(path: Path) -> tuple[int, bytes]:
+    """Origin-style grid whose off-plot cells would dominate ordinary density detection."""
+    cols, rows = 40, 12
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="4in" height="4in">',
+        '<svg viewBox="0 0 1000 1000" width="100" height="100" preserveAspectRatio="none">',
+        '<defs><mask id="visible-plot"><rect x="200" y="100" width="600" height="600" fill="white"/></mask></defs>',
+        '<g id="overflow-grid" mask="url(#visible-plot)">',
+    ]
+    for row in range(rows):
+        for col in range(cols):
+            x, y = -300 + col * 40, 100 + row * 50
+            color = f"#{(col * 13) % 256:02x}{(row * 19) % 256:02x}{((row + col) * 7) % 256:02x}"
+            parts.append(
+                f'<polygon points="{x},{y} {x + 40},{y} {x + 40},{y + 50} {x},{y + 50}" fill="{color}" stroke="none"/>'
+            )
+    parts.extend([
+        '</g>',
+        '<polygon id="colorbar-cell-1" points="700,40 750,40 750,70 700,70" fill="#0044ff"/>',
+        '<polygon id="colorbar-cell-2" points="750,40 800,40 800,70 750,70" fill="#ff2200"/>',
+        '<path id="axis" d="M200 100 V700 H800" fill="none" stroke="black"/>',
+        '<text id="label" x="500" y="760">Editable label</text>',
+        '</svg>',
+        '</svg>',
+    ])
+    data = "".join(parts).encode("utf-8")
+    path.write_bytes(data)
+    visible_columns = 16
+    return visible_columns * rows, data
+
+
 class HybridizerTests(unittest.TestCase):
+    def test_masked_overflow_grid_uses_only_visible_exact_cells(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "masked-overflow.svg"
+            expected_visible_cells, source_bytes = make_masked_overflow_svg(source)
+            document = SvgDocument(source)
+            detection = document.detect_heatmap(minimum_primitives=30)
+
+            self.assertEqual(detection.count, expected_visible_cells)
+            self.assertTrue(document._exact_cell_matrix(detection.element_ids))
+            self.assertAlmostEqual(detection.rect.x, 20, delta=0.2)
+            self.assertAlmostEqual(detection.rect.y, 10, delta=0.2)
+            self.assertAlmostEqual(detection.rect.width, 60, delta=0.2)
+            self.assertAlmostEqual(detection.rect.height, 60, delta=0.2)
+            self.assertNotIn("colorbar-cell-1", detection.element_ids)
+            self.assertNotIn("colorbar-cell-2", detection.element_ids)
+
+            output = Path(directory) / "masked-overflow-hybrid.svg"
+            stats = document.export_hybrid_svg(output, detection, dpi=150)
+            root = ET.fromstring(output.read_bytes())
+            image = next(e for e in root.iter() if e.get("data-origin-hybridizer") == "heatmap-raster")
+            self.assertEqual(image.get("data-origin-rasterization"), "exact-cell-matrix")
+            href = next(value for key, value in image.attrib.items() if key.endswith("href"))
+            raster = QImage.fromData(base64.b64decode(href.split(",", 1)[1]), "PNG")
+            alpha_values = [
+                raster.pixelColor(x, y).alpha()
+                for y in range(raster.height())
+                for x in range(raster.width())
+            ]
+            self.assertGreater(sum(alpha == 255 for alpha in alpha_values) / len(alpha_values), 0.99)
+            self.assertFalse(any(0 < alpha < 255 for alpha in alpha_values))
+            self.assertEqual(stats.rasterization_method, "Exact Origin cells (no interpolation)")
+            self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "colorbar-cell-1"), None))
+            self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "label"), None))
+            self.assertEqual(source.read_bytes(), source_bytes)
+
+    def test_nearly_transparent_raster_is_rejected(self) -> None:
+        image = QImage(100, 100, QImage.Format.Format_ARGB32)
+        image.fill(QColor(0, 0, 0, 0))
+        image.setPixelColor(0, 0, QColor("red"))
+        with self.assertRaisesRegex(RuntimeError, "visible raster"):
+            SvgDocument._require_visible_raster(image)
+
     def test_nested_origin_svg_viewport_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "nested-origin.svg"
