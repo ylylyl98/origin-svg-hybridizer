@@ -846,11 +846,20 @@ class SvgDocument:
 
         # Remove only the chosen heatmap primitives. Containers, styles, clipping,
         # text and every non-selected vector object remain from the original SVG.
+        # Element.remove() performs a linear search through the parent's child
+        # list. Calling it once for every heatmap cell therefore becomes
+        # quadratic for Origin files that place hundreds of thousands of cells
+        # in one group. Rebuild each affected parent's child list once instead.
+        # This preserves the exact order of every retained SVG object (and of
+        # the image inserted above), while reducing removal to linear time.
         parent_map = self._clone_parent_map(root)
+        selected_by_parent: dict[ET.Element, set[ET.Element]] = {}
         for element in selected:
             parent = parent_map.get(element)
             if parent is not None:
-                parent.remove(element)
+                selected_by_parent.setdefault(parent, set()).add(element)
+        for parent, removed_children in selected_by_parent.items():
+            parent[:] = [child for child in parent if child not in removed_children]
 
         for element in root.iter():
             if element.get("id") in self._temp_ids:
@@ -873,7 +882,7 @@ class SvgDocument:
         _report(progress, 85, "Replacing vector cells with the embedded image")
         output_root = deepcopy(self.root)
         self._insert_raster(output_root, detection.element_ids, png, detection.rect)
-        output_root.set("data-origin-hybridizer", "1.3.0")
+        output_root.set("data-origin-hybridizer", "1.3.1")
         result = self._serialize(output_root)
         _report(progress, 94, "Verifying size, live text, and retained vectors")
         self._verify_hybrid_output(result, detection)

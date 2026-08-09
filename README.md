@@ -10,7 +10,7 @@ A small Windows desktop app that converts a large, all-vector Origin heatmap SVG
 
 The app modifies the exported Origin SVG object tree. It does not recreate or redraw the figure.
 
-Version 1.3.0 adds a publication-focused editability policy. Dense heatmap cells are the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. A color-coded review shows the raster area in orange, retained vectors in blue, and live text in green. Rectangle tools can replace the raster choice, add another dense area, or explicitly keep an area editable. Export runs a safety check that the page geometry, SVG text, and retained-vector count match the source.
+Version 1.3.1 uses one publication-quality export path. Dense heatmap cells are the only automatic raster target; text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects. A color-coded review shows the raster area in orange, retained vectors in blue, and live text in green. Rectangle tools can replace the raster choice, add another dense area, or explicitly keep an area editable. Every export runs the full safety check that the page geometry, SVG text, retained-vector count, coordinates, colors, line widths, and styles match the source.
 
 The app also supports Origin exports that wrap plot objects in a nested SVG viewport, including correct previews, visible embedded colormaps, PowerPoint-compatible image placement, non-empty PDF output, and PowerPoint-based EMF conversion when Inkscape is unavailable. Large-file loading, detection, manual selection, preview generation, and export run in background workers so Windows does not mark the app as unresponsive. A 0-100% progress window reports the current processing stage and continuously updated elapsed time.
 
@@ -70,7 +70,7 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, open the workflow run and download the `origin-svg-hybridizer-windows-v1.3.0` artifact. This provides the same standalone application as a ZIP without requiring local build tools.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, open the workflow run and download the `origin-svg-hybridizer-windows-v1.3.1` artifact. This provides the same standalone application as a ZIP without requiring local build tools.
 
 ## How automatic detection works
 
@@ -93,7 +93,7 @@ The manual rectangle is useful when:
 
 The app refuses extremely large raster allocations and asks for a tighter rectangle or lower DPI instead of exhausting system memory.
 
-SVGs around 30 MB or larger can still take several seconds to parse and preview. Version 1.3.0 displays staged progress for file reading, XML parsing, object-ID preparation, geometry indexing, heatmap detection, review rendering, rasterization, PNG compression, safety verification, and final output. Wait for it to reach 100% rather than opening the same file again.
+SVGs around 30 MB or larger can still take several seconds to parse and preview. Version 1.3.1 removes the previous quadratic slowdown when deleting very large heatmap groups: a 30 MB, 180,000-cell stress figure completes the full 600-dpi publication workflow in about 12 seconds on the development machine, compared with about 134 seconds previously. The staged progress window reports file reading, XML parsing, object-ID preparation, geometry indexing, heatmap detection, review rendering, rasterization, PNG compression, full safety verification, and final output. Wait for it to reach 100% rather than opening the same file again.
 
 ## Optional PDF
 
