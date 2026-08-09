@@ -70,6 +70,12 @@ QStatusBar { background: white; border-top: 1px solid #d9e0e7; }
 """
 
 
+def application_icon_path() -> Path:
+    """Return the icon path in both source and PyInstaller builds."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return bundle_root / "packaging" / "origin-svg-hybridizer.ico"
+
+
 class TaskSignals(QObject):
     succeeded = Signal(object)
     failed = Signal(str)
@@ -285,6 +291,9 @@ class MainWindow(QMainWindow):
         self.thread_pool = QThreadPool.globalInstance()
         self.active_task: BackgroundTask | None = None
         self.setWindowTitle("Origin SVG Hybridizer")
+        icon_path = application_icon_path()
+        if icon_path.is_file():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1180, 760)
         self.setMinimumSize(960, 650)
         self.setAcceptDrops(True)
@@ -838,6 +847,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Origin SVG Hybridizer")
     app.setOrganizationName("OpenAI")
+    icon_path = application_icon_path()
+    if icon_path.is_file():
+        app.setWindowIcon(QIcon(str(icon_path)))
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLE)
     window = MainWindow()

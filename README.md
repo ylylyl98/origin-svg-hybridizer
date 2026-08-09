@@ -60,6 +60,18 @@ You can also open an SVG immediately:
 .\.venv\Scripts\python.exe -m origin_hybridizer "C:\path\to\figure.svg"
 ```
 
+## Build the standalone Windows app
+
+Double-click `build_windows.bat`. It installs PyInstaller into the private `.venv` and creates:
+
+```text
+dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
+```
+
+The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
+
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, open the workflow run and download the `origin-svg-hybridizer-windows-v1.3.0` artifact. This provides the same standalone application as a ZIP without requiring local build tools.
+
 ## How automatic detection works
 
 The detector looks for nested SVG groups containing many repeated, filled vector primitives. It ignores text, stroke-only axes, lines, images, gradients, definitions, large page backgrounds, and named annotation artwork such as arrows, labels, ticks, legends, markers, and scale objects. A spatial-density fallback handles flatter SVG structures.
