@@ -14,15 +14,26 @@ Version 1.3.1 uses one publication-quality export path. Dense heatmap cells are 
 
 The app also supports Origin exports that wrap plot objects in a nested SVG viewport, including correct previews, visible embedded colormaps, PowerPoint-compatible image placement, non-empty PDF output, and PowerPoint-based EMF conversion when Inkscape is unavailable. Large-file loading, detection, manual selection, preview generation, and export run in background workers so Windows does not mark the app as unresponsive. A 0-100% progress window reports the current processing stage and continuously updated elapsed time.
 
-## Quick start on Windows
+## Download the Windows app — no Python required
 
-1. Install 64-bit [Python 3.10 or newer](https://www.python.org/downloads/windows/). During setup, enable **Add Python to PATH**.
-2. Double-click `run_app.bat`.
-3. On the first run, wait while the app creates its private environment and installs PySide6. Later starts are immediate.
-4. Drop an Origin `.svg` file onto the preview, or click **Open SVG**.
-5. Review the editability colors: **orange** is the raster area, **blue** is retained vector artwork, and **green** is live SVG text.
-6. If the automatic choice needs adjustment, enable **Adjust with a rectangle**, choose **Replace raster selection**, **Add area to raster**, or **Keep area editable**, then drag over the relevant area.
-7. Leave **Raster DPI** at 600 for publication work, then click **Export hybrid SVG**.
+Most users should download the ready-to-use Windows build. You do **not** need to install Python or build the app yourself.
+
+1. Open [Build Windows application](https://github.com/ylylyl98/origin-svg-hybridizer/actions/workflows/build-windows.yml?query=branch%3Amain).
+2. Open the newest successful run marked with a green check.
+3. Scroll to **Artifacts** and download `origin-svg-hybridizer-windows-v1.3.1`.
+4. Right-click the downloaded ZIP and select **Extract All**.
+5. Open the extracted `Origin SVG Hybridizer` folder and double-click `Origin SVG Hybridizer.exe`.
+
+Keep the complete extracted folder together. The EXE uses the accompanying `_internal` files, although users never need to open or edit those files. You can create a Desktop shortcut to the EXE or pin it to the taskbar.
+
+> GitHub may require you to sign in before downloading an Actions artifact. The artifact is retained for 30 days; every new build creates a fresh download.
+
+## Use the app
+
+1. Drop an Origin `.svg` file onto the preview, or click **Open SVG**.
+2. Review the editability colors: **orange** is the raster area, **blue** is retained vector artwork, and **green** is live SVG text.
+3. If the automatic choice needs adjustment, enable **Adjust with a rectangle**, choose **Replace raster selection**, **Add area to raster**, or **Keep area editable**, then drag over the relevant area.
+4. Leave **Raster DPI** at 600 for publication work, then click **Export hybrid SVG**.
 
 The source SVG remains unchanged. The default output name ends in `_hybrid.svg`.
 
@@ -44,9 +55,13 @@ EMF export uses the free desktop version of [Inkscape](https://inkscape.org/rele
 
 The EMF contains the same embedded raster heatmap plus vector artwork. EMF text handling depends on the installed font and Inkscape version, so the SVG should remain the editable master.
 
-## Manual setup and run
+## Run from source — developers only
 
-Open PowerShell in this folder and run:
+This section is only for people who want to edit the Python code. Ordinary Windows users should download the prebuilt app above.
+
+Install 64-bit [Python 3.10 or newer](https://www.python.org/downloads/windows/). During setup, enable **Add Python to PATH**. Then double-click `run_app.bat`; on the first run, it creates a private environment and installs PySide6. Later starts are immediate.
+
+Alternatively, open PowerShell in the project folder and run:
 
 ```powershell
 py -m venv .venv
@@ -70,7 +85,7 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, open the workflow run and download the `origin-svg-hybridizer-windows-v1.3.1` artifact. This provides the same standalone application as a ZIP without requiring local build tools.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. After it finishes, download the `origin-svg-hybridizer-windows-v1.3.1` artifact using the instructions at the top of this README. This provides the same standalone application as a ZIP without requiring local build tools.
 
 ## How automatic detection works
 
