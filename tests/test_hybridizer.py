@@ -103,18 +103,20 @@ def make_masked_overflow_svg(path: Path) -> tuple[int, bytes]:
     data = "".join(parts).encode("utf-8")
     path.write_bytes(data)
     visible_columns = 16
-    return visible_columns * rows, data
+    return visible_columns * rows, cols * rows, data
 
 
 class HybridizerTests(unittest.TestCase):
-    def test_masked_overflow_grid_uses_only_visible_exact_cells(self) -> None:
+    def test_masked_overflow_grid_removes_clipped_cells_and_keeps_visible_region(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "masked-overflow.svg"
-            expected_visible_cells, source_bytes = make_masked_overflow_svg(source)
+            _, expected_total_cells, source_bytes = make_masked_overflow_svg(source)
             document = SvgDocument(source)
             detection = document.detect_heatmap(minimum_primitives=30)
 
-            self.assertEqual(detection.count, expected_visible_cells)
+            # The full Origin grid behind the mask is selected so the clipped
+            # (invisible) cells are removed during export as well.
+            self.assertEqual(detection.count, expected_total_cells)
             self.assertTrue(document._exact_cell_matrix(detection.element_ids))
             self.assertAlmostEqual(detection.rect.x, 20, delta=0.2)
             self.assertAlmostEqual(detection.rect.y, 10, delta=0.2)
@@ -138,6 +140,10 @@ class HybridizerTests(unittest.TestCase):
             self.assertGreater(sum(alpha == 255 for alpha in alpha_values) / len(alpha_values), 0.99)
             self.assertFalse(any(0 < alpha < 255 for alpha in alpha_values))
             self.assertEqual(stats.rasterization_method, "Exact Origin cells (no interpolation)")
+            remaining_ids = {e.get("id") for e in root.iter() if e.get("id")}
+            self.assertFalse(remaining_ids & set(detection.element_ids))
+            remaining_polygons = [e for e in root.iter() if local_name(e.tag) == "polygon"]
+            self.assertEqual(len(remaining_polygons), 2)  # only the color-bar cells survive
             self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "colorbar-cell-1"), None))
             self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "label"), None))
             self.assertEqual(source.read_bytes(), source_bytes)

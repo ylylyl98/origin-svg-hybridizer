@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from array import array
 from bisect import bisect_right
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
@@ -555,7 +555,7 @@ class SvgDocument:
         _report(progress, 8, "Checking Origin plot masks for a complete visible cell matrix")
         masked_detection = self._detect_masked_cell_matrix(minimum_primitives)
         if masked_detection is not None:
-            _report(progress, 100, f"Detected {masked_detection.count:,} visible masked heatmap objects")
+            _report(progress, 100, f"Detected {masked_detection.count:,} masked heatmap cells")
             return masked_detection
 
         descendants: dict[ET.Element, list[ElementInfo]] = defaultdict(list)
@@ -661,7 +661,13 @@ class SvgDocument:
         return Rect.union_all(visible_rects).clipped(self.view_box)
 
     def _detect_masked_cell_matrix(self, minimum_primitives: int) -> Detection | None:
-        """Prefer the complete cell grid that is actually visible through an Origin mask."""
+        """Prefer the complete Origin cell grid behind a mask, including clipped cells.
+
+        Origin exports every cell of a masked heatmap; the mask only hides the
+        overflow. Returning the full grid as the selection keeps the exact-color
+        raster at the visible rectangle while also removing the invisible
+        masked-out cells, which would otherwise remain as file bloat.
+        """
         candidates: list[tuple[int, float, Detection]] = []
         for masked_group in self.root.iter():
             if not masked_group.get("mask"):
@@ -674,17 +680,36 @@ class SvgDocument:
                 for info in self.infos
                 if info.uid not in self.protected_info_ids
                 and masked_group in self._ancestors(info.element)
-                and visible_rect.contains_point(*info.bbox.center)
             ]
             by_parent: dict[ET.Element, list[ElementInfo]] = defaultdict(list)
             for info in members:
                 by_parent[info.parent].append(info)
             for parent_members in by_parent.values():
-                repeated = self._repeated_geometry(parent_members, minimum_primitives)
-                ids = frozenset(info.uid for info in repeated)
-                if len(ids) < minimum_primitives or self._exact_cell_matrix(ids) is None:
+                visible = [
+                    info for info in parent_members
+                    if visible_rect.contains_point(*info.bbox.center)
+                ]
+                visible_repeated = self._repeated_geometry(visible, minimum_primitives)
+                visible_ids = frozenset(info.uid for info in visible_repeated)
+                if (
+                    len(visible_ids) < minimum_primitives
+                    or self._exact_cell_matrix(visible_ids) is None
+                ):
                     continue
-                region = self._tight_region(ids).clipped(visible_rect).clipped(self.view_box)
+                # Only extend into cells of the same plot series so a separate
+                # color-bar ramp or annotation under the same masked group is
+                # never removed. Origin heatmap cells share one class token.
+                classes = Counter(info.element.get("class", "") for info in visible_repeated)
+                common_class = classes.most_common(1)[0][0] if classes else ""
+                same_series = [
+                    info for info in parent_members
+                    if not common_class or info.element.get("class", "") == common_class
+                ]
+                full_repeated = self._repeated_geometry(same_series, minimum_primitives)
+                ids = frozenset(info.uid for info in full_repeated)
+                if self._exact_cell_matrix(ids) is None:
+                    continue
+                region = self._tight_region(visible_ids).clipped(visible_rect).clipped(self.view_box)
                 if region.area <= 0:
                     continue
                 detection = Detection(region, ids, "Automatic", 0.99)
@@ -1243,6 +1268,12 @@ class SvgDocument:
         for attribute in ("width", "height", "viewBox"):
             if output.get(attribute) != self.root.get(attribute):
                 raise RuntimeError(f"Safety check failed: SVG {attribute} changed during export")
+        leftover = [
+            element for element in output.iter()
+            if element.get("id") in detection.element_ids
+        ]
+        if leftover:
+            raise RuntimeError("Safety check failed: detected heatmap cells remained in the output")
         images = [
             element for element in output.iter()
             if local_name(element.tag) == "image"
