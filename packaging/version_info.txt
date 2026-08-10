@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 4, 3, 0),
-    prodvers=(1, 4, 3, 0),
+    filevers=(1, 4, 4, 0),
+    prodvers=(1, 4, 4, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,11 +16,11 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Origin SVG Hybridizer'),
           StringStruct('FileDescription', 'Origin SVG Hybridizer'),
-          StringStruct('FileVersion', '1.4.3'),
+          StringStruct('FileVersion', '1.4.4'),
           StringStruct('InternalName', 'Origin SVG Hybridizer'),
           StringStruct('OriginalFilename', 'Origin SVG Hybridizer.exe'),
           StringStruct('ProductName', 'Origin SVG Hybridizer'),
-          StringStruct('ProductVersion', '1.4.3'),
+          StringStruct('ProductVersion', '1.4.4'),
         ],
       )
     ]),
