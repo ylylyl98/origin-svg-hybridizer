@@ -685,9 +685,14 @@ class SvgDocument:
             for info in members:
                 by_parent[info.parent].append(info)
             for parent_members in by_parent.values():
+                # A cell counts as visible when its bbox overlaps the mask's
+                # visible rectangle, not only when its center lies inside.
+                # Origin masks often clip the first or last row in half; with
+                # a center test those partially visible edge cells were
+                # removed during export without ever being rasterized.
                 visible = [
                     info for info in parent_members
-                    if visible_rect.contains_point(*info.bbox.center)
+                    if visible_rect.intersects(info.bbox)
                 ]
                 visible_repeated = self._repeated_geometry(visible, minimum_primitives)
                 visible_ids = frozenset(info.uid for info in visible_repeated)

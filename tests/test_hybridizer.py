@@ -106,6 +106,36 @@ def make_masked_overflow_svg(path: Path) -> tuple[int, bytes]:
     return visible_columns * rows, cols * rows, data
 
 
+def make_masked_partial_edge_svg(path: Path) -> tuple[int, bytes]:
+    """Origin-style grid whose mask clips through the first row of cells."""
+    cols, rows = 12, 8
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="4in" height="4in">',
+        '<svg viewBox="0 0 1000 1000" width="100" height="100" preserveAspectRatio="none">',
+        '<defs><mask id="visible-plot"><rect x="200" y="240" width="600" height="600" fill="white"/></mask></defs>',
+        '<g id="edge-grid" mask="url(#visible-plot)">',
+    ]
+    for row in range(rows):
+        for col in range(cols):
+            x, y = 200 + col * 50, 200 + row * 50
+            color = f"#{(col * 13) % 256:02x}{(row * 19) % 256:02x}{((row + col) * 7) % 256:02x}"
+            parts.append(
+                f'<polygon points="{x},{y} {x + 50},{y} {x + 50},{y + 50} {x},{y + 50}" fill="{color}" stroke="none"/>'
+            )
+    parts.extend([
+        '</g>',
+        '<path id="axis" d="M200 240 V840 H800" fill="none" stroke="black"/>',
+        '<text id="label" x="500" y="880">Editable label</text>',
+        '</svg>',
+        '</svg>',
+    ])
+    data = "".join(parts).encode("utf-8")
+    path.write_bytes(data)
+    return cols * rows, data
+
+
+
+
 class HybridizerTests(unittest.TestCase):
     def test_masked_overflow_grid_removes_clipped_cells_and_keeps_visible_region(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -146,6 +176,41 @@ class HybridizerTests(unittest.TestCase):
             self.assertEqual(len(remaining_polygons), 2)  # only the color-bar cells survive
             self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "colorbar-cell-1"), None))
             self.assertIsNotNone(next((e for e in root.iter() if e.get("id") == "label"), None))
+            self.assertEqual(source.read_bytes(), source_bytes)
+
+    def test_masked_grid_keeps_partially_visible_edge_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "masked-partial-edge.svg"
+            expected_cells, source_bytes = make_masked_partial_edge_svg(source)
+            document = SvgDocument(source)
+            detection = document.detect_heatmap(minimum_primitives=30)
+
+            self.assertEqual(detection.count, expected_cells)
+            self.assertTrue(document._exact_cell_matrix(detection.element_ids))
+            # The mask clips through the first row: its center lies above the
+            # visible rectangle, but its lower half is visible, so the raster
+            # region must start at the mask edge instead of skipping the row.
+            self.assertAlmostEqual(detection.rect.y, 24, delta=0.3)
+
+            output = Path(directory) / "masked-partial-edge-hybrid.svg"
+            document.export_hybrid_svg(output, detection, dpi=150)
+            root = ET.fromstring(output.read_bytes())
+            image = next(e for e in root.iter() if e.get("data-origin-hybridizer") == "heatmap-raster")
+            self.assertEqual(image.get("data-origin-rasterization"), "exact-cell-matrix")
+            href = next(value for key, value in image.attrib.items() if key.endswith("href"))
+            raster = QImage.fromData(base64.b64decode(href.split(",", 1)[1]), "PNG")
+            self.assertFalse(raster.isNull())
+            top_opaque = next(
+                (
+                    y
+                    for y in range(raster.height())
+                    if any(raster.pixelColor(x, y).alpha() > 0 for x in range(raster.width()))
+                ),
+                None,
+            )
+            self.assertIsNotNone(top_opaque, "the partially visible first row must be rasterized")
+            remaining_ids = {e.get("id") for e in root.iter() if e.get("id")}
+            self.assertFalse(remaining_ids & set(detection.element_ids))
             self.assertEqual(source.read_bytes(), source_bytes)
 
     def test_nearly_transparent_raster_is_rejected(self) -> None:
