@@ -21,6 +21,8 @@ The app modifies the exported Origin SVG object tree. It does not recreate or re
 
 No Python installation is required for the downloadable Windows app. Keep the complete extracted folder together because the `.exe` uses the included runtime files. If Windows SmartScreen appears for an unsigned community application, choose **More info > Run anyway** only after confirming that the download came from this repository.
 
+Version 1.4.3 additionally removes the invisible masked-out heatmap cells that Origin writes behind its clip. Detection now selects the full same-series cell grid, keeps the visible region as the raster, and deletes the hidden clipped cells during export instead of leaving them embedded in the SVG. The rendered figure is unchanged, the heatmap remains one lossless PNG, and the output size for a ~30 MB masked Origin heatmap drops from about 9 MB to roughly 0.3 MB. Color bars, axes, text, and other artwork stay original SVG objects, and export now fails the safety check if any detected heatmap cell is left behind.
+
 Version 1.4.2 understands Origin plot masks before running general density detection. It rasterizes the complete cell matrix visible inside the plot, ignores off-canvas cells hidden by Origin and keeps color bars separate. Export now stops instead of replacing vectors when a generated raster is less than 2% visible, preventing nearly transparent hybrid figures. Complete matrices still use exact SVG fill colors with no polygon-edge antialiasing, color interpolation, smoothing, or newly blended colors. Text, axes, ticks, arrows, annotations, curves, markers, legends, frames, and color-bar artwork remain original SVG objects.
 
 Version 1.4.1 added the resizable preview/sidebar divider, scrollable settings, screen-aware window sizing, always-visible export controls, and exact-cell matrix conversion.
@@ -80,7 +82,7 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. Tagged versions such as `v1.4.2` are published automatically on the repository's [Releases page](https://github.com/ylylyl98/origin-svg-hybridizer/releases), where users can download the Windows ZIP without installing build tools. Ordinary development builds remain available from the workflow's artifact section for 30 days.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. Tagged versions such as `v1.4.3` are published automatically on the repository's [Releases page](https://github.com/ylylyl98/origin-svg-hybridizer/releases), where users can download the Windows ZIP without installing build tools. Ordinary development builds remain available from the workflow's artifact section for 30 days.
 
 ## How automatic detection works
 
@@ -116,7 +118,7 @@ $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The tests generate both ordinary and nested-viewport Origin-style vector heatmaps, verify automatic and manual selection, confirm that complete matrices introduce no antialiased or interpolated colors, exercise the compatible fallback for irregular selections, confirm that text and axes remain SVG objects, and validate the exported SVG with Qt's renderer.
+The tests generate both ordinary and nested-viewport Origin-style vector heatmaps, verify automatic and manual selection, confirm that complete matrices introduce no antialiased or interpolated colors, exercise the compatible fallback for irregular selections, confirm that text and axes remain SVG objects, verify that masked-out Origin cells are removed, and validate the exported SVG with Qt's renderer.
 
 ## Troubleshooting
 
