@@ -6,6 +6,7 @@ from collections import Counter, defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
+from itertools import zip_longest
 from pathlib import Path
 import base64
 import math
@@ -191,10 +192,38 @@ def _flatten_nested_svgs_for_qt(root: ET.Element) -> None:
             element.attrib.pop("transform", None)
 
 
+_SYMBOL_FIRST_FONT_RE = re.compile(r"^\s*(?:Symbol|'Symbol'|\"Symbol\")\s*(?:,|(?:!important\s*)?$)", re.IGNORECASE)
+_INLINE_FONT_FAMILY_RE = re.compile(r"((?:^|;)\s*font-family\s*:\s*)([^;]*)", re.IGNORECASE)
+
+
+def _qt_symbol_font_family(value: str) -> str:
+    if not _SYMBOL_FIRST_FONT_RE.match(value):
+        return value
+    priority = " !important" if re.search(r"!important\s*$", value, re.IGNORECASE) else ""
+    return "Symbol" + priority
+
+
+def _prepare_svg_for_qt(root: ET.Element) -> None:
+    """Adapt only render copies for Qt's viewport and legacy Symbol handling."""
+    _flatten_nested_svgs_for_qt(root)
+    # Qt treats Origin's family list as a different font, so legacy Symbol text
+    # such as ASCII D loses its Delta glyph. Preserve the first Symbol family
+    # explicitly, including inherited presentation attributes and inline styles.
+    for element in root.iter():
+        family = element.get("font-family")
+        if family is not None:
+            element.set("font-family", _qt_symbol_font_family(family))
+        style = element.get("style")
+        if style is not None:
+            element.set("style", _INLINE_FONT_FAMILY_RE.sub(
+                lambda match: match.group(1) + _qt_symbol_font_family(match.group(2)), style,
+            ))
+
+
 def qt_preview_bytes(svg_bytes: bytes) -> bytes:
     parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
     root = ET.fromstring(svg_bytes, parser=parser)
-    _flatten_nested_svgs_for_qt(root)
+    _prepare_svg_for_qt(root)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
@@ -301,6 +330,13 @@ class CellMatrix:
         return len(self.y_edges) - 1
 
 
+@dataclass(frozen=True)
+class _ColorbarReplacement:
+    cell_ids: tuple[str, ...]
+    definitions: ET.Element
+    rectangle: ET.Element
+
+
 class SvgDocument:
     """An Origin SVG plus analysis needed to replace only dense filled primitives."""
 
@@ -329,7 +365,7 @@ class SvgDocument:
         )
         _report(progress, 40, "Preparing the Origin-compatible render copy")
         analysis_root = deepcopy(self.root)
-        _flatten_nested_svgs_for_qt(analysis_root)
+        _prepare_svg_for_qt(analysis_root)
         self._analysis_bytes = self._serialize(analysis_root)
         # Indexing every element through QSvgRenderer is very expensive for a
         # 30-100 MB Origin polygon map. Nested Origin maps use simple geometry,
@@ -390,7 +426,7 @@ class SvgDocument:
                     self._append_preview_style(element, "stroke:#1769e0")
                 else:
                     self._append_preview_style(element, "stroke:#1769e0;stroke-opacity:0.9")
-        _flatten_nested_svgs_for_qt(root)
+        _prepare_svg_for_qt(root)
         return render_qt_svg_preview(self._serialize(root), self.view_box, max_side)
 
     @staticmethod
@@ -843,6 +879,19 @@ class SvgDocument:
 
     def _selected_only_root(self, selected_ids: set[str] | frozenset[str], region: Rect, pixel_width: int, pixel_height: int) -> ET.Element:
         root = deepcopy(self.root)
+        parent_map = self._clone_parent_map(root)
+        insertion_parent, _, _ = self._raster_insertion_context(root, selected_ids, parent_map)
+
+        # These effects are applied by the original ancestors after insertion.
+        # Bake only effects below the insertion parent into the PNG. Inherited
+        # cell painting (fill, fill-opacity, stroke, etc.) must remain in place.
+        for ancestor in self._path_to_root(insertion_parent, parent_map):
+            for name, value in (("opacity", "1"), ("mask", "none"), ("clip-path", "none")):
+                ancestor.set(name, value)
+            self._append_preview_style(
+                ancestor,
+                "opacity:1 !important;mask:none !important;clip-path:none !important",
+            )
 
         def prune(parent: ET.Element, protected: bool = False) -> bool:
             retained_selected = False
@@ -904,6 +953,8 @@ class SvgDocument:
         if bbox is None or bbox.width <= 0 or bbox.height <= 0:
             return None
         if tag == "rect":
+            if any(_number(element.get(name)) != 0 for name in ("rx", "ry")):
+                return None
             return bbox
         if tag != "polygon":
             return None
@@ -933,7 +984,9 @@ class SvgDocument:
         has_stylesheet = b"<?xml-stylesheet" in self.source_bytes or any(
             local_name(element.tag) == "style" for element in self.root.iter()
         )
-        if has_stylesheet and any(info.element.get("class") for info in infos):
+        # Tag and ID selectors can override presentation attributes too. Leave
+        # the complete cascade to Qt rather than copying possibly stale fills.
+        if has_stylesheet:
             return None
         cumulative = self._cumulative_matrix(parent)
         if (
@@ -957,8 +1010,7 @@ class SvgDocument:
                 "stroke", (current.get("stroke") or "").strip()
             ).lower()
             if (
-                (has_stylesheet and current.get("class"))
-                or inherited_fill_opacity not in {"", "1", "1.0"}
+                inherited_fill_opacity not in {"", "1", "1.0"}
                 or inherited_stroke not in {"", "none", "transparent"}
             ):
                 return None
@@ -1048,9 +1100,10 @@ class SvgDocument:
         image.fill(0)
         bits = image.bits()
         stride = image.bytesPerLine()
-        row_cache: dict[int, bytes] = {}
+        last_source_row = -2
+        row_bytes = b""
         for target_y, source_row in enumerate(y_cells):
-            if source_row not in row_cache:
+            if source_row != last_source_row:
                 values = array(
                     "I",
                     (
@@ -1059,9 +1112,10 @@ class SvgDocument:
                         for source_column in x_cells
                     ),
                 )
-                row_cache[source_row] = values.tobytes()
+                row_bytes = values.tobytes()
+                last_source_row = source_row
             start = target_y * stride
-            bits[start : start + pixel_width * 4] = row_cache[source_row]
+            bits[start : start + pixel_width * 4] = row_bytes
             if target_y and target_y % 256 == 0:
                 _report(progress, 35 + round(35 * target_y / pixel_height), "Writing exact cell colors")
 
@@ -1119,7 +1173,7 @@ class SvgDocument:
         _report(progress, 8, "Irregular selection; using the compatible SVG renderer")
         _report(progress, 10, "Building the selected-object render copy")
         selected_root = self._selected_only_root(selected_ids, region, pixel_width, pixel_height)
-        _flatten_nested_svgs_for_qt(selected_root)
+        _prepare_svg_for_qt(selected_root)
         _report(progress, 30, f"Rendering heatmap at {pixel_width:,} × {pixel_height:,} pixels")
         renderer = QSvgRenderer(QByteArray(self._serialize(selected_root)))
         if not renderer.isValid():
@@ -1153,19 +1207,17 @@ class SvgDocument:
         path.reverse()
         return path
 
-    def _insert_raster(
+    def _raster_insertion_context(
         self,
         root: ET.Element,
-        selected_ids: frozenset[str],
-        png: bytes,
-        region: Rect,
-        rasterization_method: str = "svg-renderer",
-    ) -> None:
+        selected_ids: set[str] | frozenset[str],
+        parent_map: dict[ET.Element, ET.Element],
+    ) -> tuple[ET.Element, int, list[ET.Element]]:
+        """Find the shared parent and branch position of the single image."""
         id_map = {e.get("id"): e for e in root.iter() if e.get("id")}
         selected = [id_map[uid] for uid in selected_ids if uid in id_map]
-        if not selected:
+        if len(selected) != len(selected_ids) or not selected:
             raise RuntimeError("Selected SVG objects disappeared during export")
-        parent_map = self._clone_parent_map(root)
         paths = [self._path_to_root(element, parent_map) for element in selected]
         common_length = min(len(path) for path in paths)
         lca = root
@@ -1186,6 +1238,94 @@ class SvgDocument:
             direct_branches.append(path[lca_index + 1])
         child_positions = {child: index for index, child in enumerate(list(lca))}
         insert_at = min(child_positions[branch] for branch in direct_branches)
+        return lca, insert_at, selected
+
+    def _validate_raster_selection(self, selected_ids: frozenset[str]) -> None:
+        insertion_parent, insert_at, selected = self._raster_insertion_context(
+            self.root, selected_ids, self.parent_map,
+        )
+
+        def painted_elements(element: ET.Element):
+            tag = local_name(element.tag)
+            if tag in RESOURCE_TAGS:
+                return
+            if tag in DRAWABLE_TAGS | TEXT_TAGS | {"image", "foreignObject"}:
+                yield element
+                return
+            for child in element:
+                yield from painted_elements(child)
+
+        # The image starts before the first selected branch. Retained paint
+        # from that point through the last selected primitive would move above
+        # selected paint that was originally later, even inside nested groups.
+        remaining = len(selected)
+        for branch in list(insertion_parent)[insert_at:]:
+            for element in painted_elements(branch):
+                if element.get("id") in selected_ids:
+                    remaining -= 1
+                elif remaining:
+                    raise ValueError(
+                        "Selected cells are interrupted by retained artwork in paint order. "
+                        "Select one uninterrupted heatmap layer so it can be replaced by a single image."
+                    )
+                if not remaining:
+                    break
+            if not remaining:
+                break
+
+        def effect_value(value: str) -> str:
+            return value.lower().split("!important", 1)[0].strip()
+
+        shared_ancestors = self._path_to_root(insertion_parent, self.parent_map)
+        for ancestor in shared_ancestors:
+            style = _style_map(ancestor)
+            for name, neutral_values in (("filter", {"", "none"}), ("mix-blend-mode", {"", "normal"})):
+                if effect_value(style.get(name, ancestor.get(name, ""))) not in neutral_values:
+                    raise ValueError(
+                        "The shared heatmap layer uses a filter or blending effect that cannot "
+                        "be safely preserved by a single image. Remove that effect before export."
+                    )
+
+        # Without a CSS cascade engine, filters/blending and explicit inherited
+        # compositing effects cannot be safely resolved in the render copy.
+        for element in self.root.iter():
+            if local_name(element.tag) != "style":
+                continue
+            css = "".join(element.itertext()).lower()
+            for name, value in re.findall(
+                r"(?:^|[;{])\s*(filter|mix-blend-mode|opacity|mask|clip-path)\s*:\s*([^;}]+)", css,
+            ):
+                value = effect_value(value)
+                if (name == "filter" and value != "none") or (
+                    name == "mix-blend-mode" and value != "normal"
+                ) or value == "inherit":
+                    raise ValueError(
+                        "A stylesheet uses a filter, blending, or inherited compositing effect "
+                        "that cannot be safely preserved by a single image."
+                    )
+        for element in selected:
+            path = self._path_to_root(element, self.parent_map)
+            for descendant in path[path.index(insertion_parent) + 1:]:
+                style = _style_map(descendant)
+                if any(
+                    effect_value(style.get(name, descendant.get(name, ""))) == "inherit"
+                    for name in ("opacity", "mask", "clip-path")
+                ):
+                    raise ValueError(
+                        "Selected cells explicitly inherit a compositing effect from the shared layer. "
+                        "Use explicit effect values before exporting a single image."
+                    )
+
+    def _insert_raster(
+        self,
+        root: ET.Element,
+        selected_ids: frozenset[str],
+        png: bytes,
+        region: Rect,
+        rasterization_method: str = "svg-renderer",
+    ) -> None:
+        parent_map = self._clone_parent_map(root)
+        lca, insert_at, selected = self._raster_insertion_context(root, selected_ids, parent_map)
 
         cumulative = self._cumulative_matrix(lca, parent_map)
         neutralizer = inverse(cumulative)
@@ -1196,7 +1336,12 @@ class SvgDocument:
         # axis-aligned scale/translation case, express the image rectangle in
         # the parent group's native coordinates and omit the transform entirely.
         # This maps to the same root rectangle but survives Office import.
-        if abs(cumulative[1]) < 1e-12 and abs(cumulative[2]) < 1e-12:
+        if (
+            abs(cumulative[1]) < 1e-12
+            and abs(cumulative[2]) < 1e-12
+            and cumulative[0] > 0
+            and cumulative[3] > 0
+        ):
             image_region = map_rect(neutralizer, region)
             image_transform: Matrix | None = None
         else:
@@ -1237,6 +1382,251 @@ class SvgDocument:
             if element.get("id") in self._temp_ids:
                 element.attrib.pop("id", None)
 
+    def _colorbar_artwork_evidence(
+        self, parent: ET.Element, cells: list[ET.Element], bounds: Rect, horizontal: bool,
+    ) -> bool:
+        """Require a named color scale, or nearby frame and perpendicular ticks."""
+        for node in [*cells, parent, *self._ancestors(parent)]:
+            name = " ".join(value for key, value in node.attrib.items() if local_name(key) in {"id", "class", "aria-label", "scope"})
+            compact = re.sub(r"[^a-z]", "", name.lower())
+            if any(token in compact for token in ("colorbar", "colourbar", "colorscale", "colourscale", "colorramp", "colourramp")):
+                return True
+
+        siblings = list(parent)
+        positions = {child: index for index, child in enumerate(siblings)}
+        first, last = positions[cells[0]], positions[cells[-1]]
+        nearby = siblings[max(0, first - 12):first] + siblings[last + 1:last + 25]
+        frame = False
+        ticks: set[float] = set()
+        tolerance = max(bounds.width, bounds.height) * 1e-7
+
+        def close(a: float, b: float) -> bool:
+            return abs(a - b) <= tolerance
+
+        for element in nearby:
+            style = _style_map(element)
+            stroke = style.get("stroke", element.get("stroke", "")).lower()
+            if stroke in {"", "none", "transparent"} or element.get("transform"):
+                continue
+            tag = local_name(element.tag)
+            if tag == "rect" and style.get("fill", element.get("fill", "")).lower() == "none":
+                box = _basic_geometry_bbox(element)
+                frame |= box is not None and all(close(a, b) for a, b in zip(
+                    (box.x, box.y, box.width, box.height), (bounds.x, bounds.y, bounds.width, bounds.height),
+                ))
+                continue
+            if tag == "line":
+                coordinates = [_number(element.get(key)) for key in ("x1", "y1", "x2", "y2")]
+            elif tag == "polyline":
+                coordinates = [float(value) for value in _SVG_NUMBER_RE.findall(element.get("points", ""))]
+            elif tag == "path" and re.fullmatch(r"[\s,MLml0-9.eE+\-]+", element.get("d", "")):
+                # Only explicit absolute M/L segments; relative paths need interpretation.
+                if re.search(r"[ml]", element.get("d", "")):
+                    continue
+                coordinates = [float(value) for value in _SVG_NUMBER_RE.findall(element.get("d", ""))]
+            else:
+                continue
+            if len(coordinates) != 4:
+                continue
+            x0, y0, x1, y1 = coordinates
+            a0, a1, t0, t1 = (x0, x1, y0, y1) if horizontal else (y0, y1, x0, x1)
+            start, end = (bounds.x, bounds.right) if horizontal else (bounds.y, bounds.bottom)
+            edge0, edge1 = (bounds.y, bounds.bottom) if horizontal else (bounds.x, bounds.right)
+            if close(t0, t1) and (close(t0, edge0) or close(t0, edge1)):
+                frame |= close(min(a0, a1), start) and close(max(a0, a1), end)
+            if close(a0, a1) and start - tolerance <= a0 <= end + tolerance and not close(t0, t1):
+                # A tick touches an edge and points outward, rather than crossing the strip.
+                if any(close(anchor, edge) and (
+                    other < edge0 - tolerance or other > edge1 + tolerance
+                ) for anchor, other in ((t0, t1), (t1, t0)) for edge in (edge0, edge1)):
+                    ticks.add(round(a0, 8))
+        return frame and len(ticks) >= 2
+
+    def _colorbar_replacements(self, selected_ids: frozenset[str]) -> list[_ColorbarReplacement]:
+        """Recognize fine simple ramps conservatively; do not interpret a CSS cascade."""
+        if b"<?xml-stylesheet" in self.source_bytes or any(
+            local_name(element.tag) in {"style", "script", "animate", "animateTransform", "animateMotion", "set"}
+            for element in self.root.iter()
+        ):
+            return []
+        referenced: set[str] = set()
+        for element in self.root.iter():
+            if any(local_name(key).lower().startswith("on") for key in element.attrib):
+                return []
+            for key, value in element.attrib.items():
+                referenced.update(_URL_FRAGMENT_RE.findall(value))
+                if local_name(key) == "href" and value.startswith("#"):
+                    referenced.add(value[1:])
+                if local_name(key) in {"aria-labelledby", "aria-describedby"}:
+                    referenced.update(value.split())
+        # A dangling retained reference must stay dangling after this export.
+        used_ids = {e.get("id") for e in self.root.iter() if e.get("id")} | referenced
+        excluded_ids = selected_ids | referenced
+        replacements: list[_ColorbarReplacement] = []
+        counter = 0
+
+        def build(parent: ET.Element, cells: list[ET.Element], boxes: list[Rect], horizontal: bool) -> None:
+            nonlocal counter
+            if len(cells) < 16 or any(e.get("id") in excluded_ids for e in cells):
+                return
+            # Masked plot overflow is never a colorbar, even when it forms a fine strip.
+            for ancestor in [parent, *self._ancestors(parent)]:
+                style = _style_map(ancestor)
+                if any(style.get(name, ancestor.get(name, "none")).lower() not in {"", "none"}
+                       for name in ("mask", "clip-path", "filter")) or style.get(
+                           "mix-blend-mode", ancestor.get("mix-blend-mode", "normal")
+                       ).lower() not in {"", "normal"}:
+                    return
+            colors = []
+            common_attributes = None
+            geometry_names = {"id", "x", "y", "width", "height", "points", "fill"}
+            allowed = geometry_names | {"stroke", "fill-rule", "shape-rendering", "class", "style", "rx", "ry", "opacity", "fill-opacity"}
+            for cell in cells:
+                if len(cell) or (cell.text or "").strip() or (cell.tail or "").strip():
+                    return
+                box = self._axis_aligned_cell_bbox(cell)
+                if box is None or not all(math.isfinite(value) for value in (box.x, box.y, box.width, box.height)):
+                    return
+                if local_name(cell.tag) == "rect" and any(
+                    _SVG_NUMBER_RE.fullmatch(cell.get(name, "0").strip()) is None
+                    for name in ("x", "y", "width", "height", "rx", "ry")
+                ):
+                    return
+                if local_name(cell.tag) == "polygon" and re.sub(
+                    r"[\s,]", "", _SVG_NUMBER_RE.sub("", cell.get("points", "")),
+                ):
+                    return
+                if local_name(cell.tag) == "polygon":
+                    values = [float(value) for value in _SVG_NUMBER_RE.findall(cell.get("points", ""))]
+                    points = list(zip(values[0::2], values[1::2]))
+                    if points[-1] == points[0]:
+                        points.pop()
+                    if any(x0 != x1 and y0 != y1 for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1])):
+                        return
+                if any(key not in allowed and not key.startswith("{") for key in cell.attrib):
+                    return
+                style = _style_map(cell)
+                if set(style) - {"fill", "stroke", "fill-rule", "shape-rendering"}:
+                    return
+                color = self._solid_cell_color(cell)
+                raw_fill = QColor(style.get("fill", cell.get("fill", "")))
+                if color is None or QColor.fromRgba(color).alpha() != 255 or raw_fill.alpha() != 255:
+                    return
+                if "stroke" not in style and not cell.get("stroke") and any(
+                    _style_map(ancestor).get("stroke", ancestor.get("stroke", "none")).lower() not in {"", "none", "transparent"}
+                    for ancestor in [parent, *self._ancestors(parent)]
+                ):
+                    return
+                colors.append(QColor.fromRgba(color).name())
+                attributes = {key: value for key, value in cell.attrib.items() if key not in geometry_names | {"style", "rx", "ry", "opacity", "fill-opacity"}}
+                attributes.update({key: value for key, value in style.items() if key != "fill"})
+                # Explicitly suppress inherited strokes, as each original cell does.
+                attributes.setdefault("stroke", "none")
+                if common_attributes is not None and common_attributes != attributes:
+                    return
+                common_attributes = attributes
+            order = sorted(range(len(cells)), key=lambda i: boxes[i].x if horizontal else boxes[i].y)
+            ordered_boxes = [boxes[i] for i in order]
+            ordered_colors = [colors[i] for i in order]
+            lengths = [box.width if horizontal else box.height for box in ordered_boxes]
+            if max(lengths) > 2 * min(lengths):
+                return
+            for left, right in zip(ordered_boxes, ordered_boxes[1:]):
+                end = left.right if horizontal else left.bottom
+                start = right.x if horizontal else right.y
+                if not math.isclose(end, start, rel_tol=0, abs_tol=1e-9):
+                    return
+            full_bounds = Rect.union_all(boxes)
+            long_side, short_side = (full_bounds.width, full_bounds.height) if horizontal else (full_bounds.height, full_bounds.width)
+            if long_side < 4 * short_side or not self._colorbar_artwork_evidence(parent, cells, full_bounds, horizontal):
+                return
+            # Preserve black/white endpoint cells as separate original cap artwork.
+            interior = order[:]
+            if ordered_colors[0] in {"#000000", "#ffffff"}:
+                interior.pop(0)
+            if ordered_colors[-1] in {"#000000", "#ffffff"}:
+                interior.pop()
+            interior_colors = [colors[i] for i in interior]
+            if len(interior) < 16 or len(set(interior_colors)) < max(16, len(interior) // 2):
+                return
+            for a, b in zip(interior_colors, interior_colors[1:]):
+                ca, cb = QColor(a), QColor(b)
+                if max(abs(ca.red() - cb.red()), abs(ca.green() - cb.green()), abs(ca.blue() - cb.blue())) > 64:
+                    return
+            bounds = Rect.union_all([boxes[i] for i in interior])
+            while True:
+                counter += 1
+                gradient_id = f"__origin_colorbar_{counter}"
+                if gradient_id not in used_ids and gradient_id + "_rect" not in used_ids:
+                    break
+            used_ids.update((gradient_id, gradient_id + "_rect"))
+            definitions = ET.Element(f"{{{SVG_NS}}}defs")
+            gradient = ET.SubElement(definitions, f"{{{SVG_NS}}}linearGradient", {
+                "id": gradient_id, "gradientUnits": "userSpaceOnUse", "color-interpolation": "sRGB",
+                "x1": f"{bounds.x:.12g}", "y1": f"{bounds.y:.12g}",
+                "x2": f"{(bounds.right if horizontal else bounds.x):.12g}",
+                "y2": f"{(bounds.y if horizontal else bounds.bottom):.12g}",
+            })
+            stops = [(0.0, interior_colors[0])]
+            for index in interior:
+                box = boxes[index]
+                offset = ((box.x + box.width / 2 - bounds.x) / bounds.width) if horizontal else ((box.y + box.height / 2 - bounds.y) / bounds.height)
+                stops.append((offset, colors[index]))
+            stops.append((1.0, interior_colors[-1]))
+            for offset, color in stops:
+                ET.SubElement(gradient, f"{{{SVG_NS}}}stop", {"offset": f"{offset:.12g}", "stop-color": color})
+            rectangle = ET.Element(f"{{{SVG_NS}}}rect", {
+                **(common_attributes or {}), "id": gradient_id + "_rect",
+                "x": f"{bounds.x:.12g}", "y": f"{bounds.y:.12g}", "width": f"{bounds.width:.12g}", "height": f"{bounds.height:.12g}",
+                "fill": f"url(#{gradient_id})",
+            })
+            interior_indices = set(interior)
+            removed = [cell for index, cell in enumerate(cells) if index in interior_indices]
+            rectangle.tail = removed[-1].tail
+            replacements.append(_ColorbarReplacement(tuple(cell.get("id", "") for cell in removed), definitions, rectangle))
+
+        for parent in self.root.iter():
+            if local_name(parent.tag) not in CONTAINER_TAGS or self._inside_resource(parent):
+                continue
+            cells: list[ET.Element] = []
+            boxes: list[Rect] = []
+            orientation = None
+            for child in parent:
+                box = _basic_geometry_bbox(child) if local_name(child.tag) in {"rect", "polygon"} else None
+                direction = None if box is None or box.width == box.height else box.width < box.height
+                # Partition by common transverse geometry, without breaking at a
+                # gap, overlap, or unsafe paint: reject that entire candidate run.
+                compatible = bool(boxes) and direction == orientation and (
+                    (box.y, box.height) == (boxes[0].y, boxes[0].height) if direction else
+                    (box.x, box.width) == (boxes[0].x, boxes[0].width)
+                ) if box is not None else False
+                if cells and not compatible:
+                    build(parent, cells, boxes, bool(orientation))
+                    cells, boxes = [], []
+                if direction is not None:
+                    cells.append(child)
+                    boxes.append(box)
+                    orientation = direction
+            if cells:
+                build(parent, cells, boxes, bool(orientation))
+        return replacements
+
+    @staticmethod
+    def _apply_colorbar_replacements(root: ET.Element, replacements: list[_ColorbarReplacement]) -> None:
+        first = {replacement.cell_ids[0]: replacement for replacement in replacements}
+        removed = {uid for replacement in replacements for uid in replacement.cell_ids}
+        for parent in list(root.iter()):
+            if not any(child.get("id") in removed for child in parent):
+                continue
+            children = []
+            for child in parent:
+                replacement = first.get(child.get("id"))
+                if replacement is not None:
+                    children.extend((deepcopy(replacement.definitions), deepcopy(replacement.rectangle)))
+                if child.get("id") not in removed:
+                    children.append(child)
+            parent[:] = children
+
     def hybrid_bytes(
         self,
         detection: Detection,
@@ -1245,6 +1635,7 @@ class SvgDocument:
     ) -> tuple[bytes, int, int]:
         if not detection.element_ids:
             raise ValueError("No heatmap objects are selected")
+        self._validate_raster_selection(detection.element_ids)
         png, pixel_width, pixel_height, rasterization_method = self._raster_png(
             detection.element_ids,
             detection.rect,
@@ -1253,6 +1644,7 @@ class SvgDocument:
         )
         _report(progress, 85, "Replacing vector cells with the embedded image")
         output_root = deepcopy(self.root)
+        self._apply_colorbar_replacements(output_root, self._colorbar_replacements(detection.element_ids))
         self._insert_raster(
             output_root,
             detection.element_ids,
@@ -1262,14 +1654,17 @@ class SvgDocument:
         )
         output_root.set("data-origin-hybridizer", __version__)
         result = self._serialize(output_root)
-        _report(progress, 94, "Verifying size, live text, and retained vectors")
+        _report(progress, 94, "Verifying size, live text, retained vectors, and continuous colorbars")
         self._verify_hybrid_output(result, detection)
         _report(progress, 100, "Hybrid SVG assembled")
         return result, pixel_width, pixel_height
 
     def _verify_hybrid_output(self, svg_bytes: bytes, detection: Detection) -> None:
         """Fail export if editable artwork or page geometry changed unexpectedly."""
-        output = ET.fromstring(svg_bytes)
+        output = ET.fromstring(svg_bytes, parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
+        replacements = self._colorbar_replacements(detection.element_ids)
+        first = {replacement.cell_ids[0]: replacement for replacement in replacements}
+        replaced_ids = {uid for replacement in replacements for uid in replacement.cell_ids}
         for attribute in ("width", "height", "viewBox"):
             if output.get(attribute) != self.root.get(attribute):
                 raise RuntimeError(f"Safety check failed: SVG {attribute} changed during export")
@@ -1297,8 +1692,12 @@ class SvgDocument:
         if source_text != output_text:
             raise RuntimeError("Safety check failed: editable SVG text changed during export")
         source_vectors = []
+        removed_vector_ids = detection.element_ids | replaced_ids
         for element in self.root.iter():
-            if local_name(element.tag) not in DRAWABLE_TAGS or element.get("id") in detection.element_ids:
+            if element.get("id") in first:
+                rectangle = first[element.get("id")].rectangle
+                source_vectors.append((local_name(rectangle.tag), tuple(sorted(rectangle.attrib.items())), rectangle.text, rectangle.tail))
+            if local_name(element.tag) not in DRAWABLE_TAGS or element.get("id") in removed_vector_ids:
                 continue
             attributes = dict(element.attrib)
             if attributes.get("id") in self._temp_ids:
@@ -1314,12 +1713,43 @@ class SvgDocument:
             )
         expected_drawables = sum(
             local_name(element.tag) in DRAWABLE_TAGS for element in self.root.iter()
-        ) - detection.count
+        ) - detection.count - len(replaced_ids) + len(replacements)
         output_drawables = sum(
             local_name(element.tag) in DRAWABLE_TAGS for element in output.iter()
         )
         if output_drawables != expected_drawables:
             raise RuntimeError("Safety check failed: an unexpected vector object changed during export")
+
+        # Compare retained structure as a stream, without cloning the dense
+        # source grid or storing another nested tree of signatures. Inject only
+        # source-derived, validated gradient/rectangle pairs at their exact
+        # original sibling positions. This checks stops, ancestor geometry,
+        # resources, retained images and stacking as well as vector attributes.
+        source_removed = detection.element_ids | replaced_ids
+
+        def events(element: ET.Element, source: bool, replacement_node: bool = False):
+            uid = element.get("id")
+            if source and not replacement_node:
+                replacement = first.get(uid)
+                if replacement is not None:
+                    yield from events(replacement.definitions, True, True)
+                    yield from events(replacement.rectangle, True, True)
+                if uid in source_removed:
+                    return
+            elif not source and element is images[0]:
+                return
+            attributes = dict(element.attrib)
+            if source and attributes.get("id") in self._temp_ids:
+                attributes.pop("id", None)
+            if element is self.root or element is output:
+                attributes.pop("data-origin-hybridizer", None)
+            yield ("start", element.tag, tuple(sorted(attributes.items())), element.text)
+            for child in element:
+                yield from events(child, source, replacement_node)
+            yield ("end", element.tag, element.tail)
+
+        if any(left != right for left, right in zip_longest(events(self.root, True), events(output, False))):
+            raise RuntimeError("Safety check failed: retained SVG structure or approved colorbar gradient changed")
 
     def export_hybrid_svg(
         self,
@@ -1329,6 +1759,15 @@ class SvgDocument:
         progress: ProgressCallback | None = None,
     ) -> ExportStats:
         output_path = Path(output_path)
+        same_source = output_path.resolve() == self.path.resolve()
+        if not same_source:
+            try:
+                same_source = output_path.samefile(self.path)
+            except OSError:
+                # A new output file has no inode to compare yet.
+                pass
+        if same_source:
+            raise ValueError("Choose a different output file; the original source SVG cannot be overwritten")
         svg_bytes, pixel_width, pixel_height = self.hybrid_bytes(
             detection,
             dpi,
@@ -1345,6 +1784,17 @@ class SvgDocument:
             and element.get("data-origin-hybridizer") == "heatmap-raster"
         )
         method = heatmap_image.get("data-origin-rasterization", "svg-renderer")
+        output_parent_map = self._clone_parent_map(output_root)
+
+        def inside_output_resource(element: ET.Element) -> bool:
+            current = output_parent_map.get(element)
+            while current is not None:
+                if local_name(current.tag) in RESOURCE_TAGS:
+                    return True
+                current = output_parent_map.get(current)
+            return False
+
+        colorbar_count = len(self._colorbar_replacements(detection.element_ids))
         return ExportStats(
             output_path=output_path,
             rasterized_elements=detection.count,
@@ -1354,7 +1804,10 @@ class SvgDocument:
             output_bytes=len(svg_bytes),
             region=detection.rect,
             editable_text_objects=self.classification_summary(detection).editable_text_objects,
-            editable_vector_objects=self.classification_summary(detection).editable_vector_objects,
+            editable_vector_objects=sum(
+                local_name(element.tag) in DRAWABLE_TAGS and not inside_output_resource(element)
+                for element in output_root.iter()
+            ),
             rasterization_method=(
                 "Exact Origin cells (no interpolation)"
                 if method == "exact-cell-matrix"
@@ -1362,5 +1815,6 @@ class SvgDocument:
             ),
             verification_message=(
                 "Verified: size, text, and retained vector coordinates/styles match the source SVG"
+                + (f"; {colorbar_count} continuous colorbar(s) match original cell centers" if colorbar_count else "")
             ),
         )

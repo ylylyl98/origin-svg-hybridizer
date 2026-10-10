@@ -3,12 +3,13 @@
 A small Windows desktop app that converts a large, all-vector Origin heatmap SVG into a compact **hybrid SVG**:
 
 - dense colormap/heatmap cells become one embedded high-resolution PNG;
+- confidently recognized, finely sampled color bars become an editable continuous SVG gradient;
 - axes, tick marks, labels, arrows, annotations, legends, and other graphics remain the original editable SVG objects;
 - the original SVG file is never overwritten;
 - the result opens directly in PowerPoint and Adobe Illustrator;
 - optional EMF output is available through Inkscape, and PDF remains a secondary option.
 
-The app modifies the exported Origin SVG object tree. It does not recreate or redraw the figure.
+The app modifies the exported Origin SVG object tree. Heatmap cells keep their exact colors; continuous color bars interpolate between the original cell-center colors in sRGB. Frames, ticks, labels, and black or white endcaps remain original SVG objects.
 
 ## Download the Windows app
 
@@ -20,6 +21,10 @@ The app modifies the exported Origin SVG object tree. It does not recreate or re
 4. Open the extracted `Origin SVG Hybridizer` folder and run `Origin SVG Hybridizer.exe`.
 
 No Python installation is required for the downloadable Windows app. Keep the complete extracted folder together because the `.exe` uses the included runtime files. If Windows SmartScreen appears for an unsigned community application, choose **More info > Run anyway** only after confirming that the download came from this repository.
+
+Version 1.4.5 converts confidently recognized, finely sampled color bars into editable continuous sRGB gradients while preserving their frames, ticks, text, and black or white endcaps. The heatmap remains one lossless PNG with exact cell colors. Qt previews now select Symbol explicitly when it is the first requested font family, so Origin's Symbol `D` displays as Delta; exported SVG text and font lists remain unchanged.
+
+This release also adds six export correctness safeguards: it rejects the source path and existing filesystem aliases before rendering, applies shared ancestor opacity only once, rejects selected cells interrupted by retained artwork when one PNG cannot preserve paint order, preserves reflected raster orientation, and uses the compatible SVG renderer for stylesheet-driven fills and rounded rectangles. Unsupported shared filters, blending, and explicitly inherited compositing effects also fail clearly before raster work. Exact-cell PNG generation caches at most one constructed row, bounding cache memory while reusing repeated rows.
 
 Version 1.4.4 keeps partially visible edge rows instead of dropping them. Origin masks often clip through the first or last heatmap row, and the app previously treated a cell as visible only when its center fell inside the masked area, so an edge row cut in half could be removed during export without ever being rasterized. Detection now treats any cell whose rectangle overlaps the visible area as visible: the visible half of a clipped edge row is preserved in the raster, fully hidden off-plot cells are still removed, and the output remains one lossless PNG that renders pixel-identical to the original figure.
 
@@ -84,15 +89,17 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. Tagged versions such as `v1.4.4` are published automatically on the repository's [Releases page](https://github.com/ylylyl98/origin-svg-hybridizer/releases), where users can download the Windows ZIP without installing build tools. Ordinary development builds remain available from the workflow's artifact section for 30 days.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. Tagged versions such as `v1.4.5` are published automatically on the repository's [Releases page](https://github.com/ylylyl98/origin-svg-hybridizer/releases), where users can download the Windows ZIP without installing build tools. Ordinary development builds remain available from the workflow's artifact section for 30 days.
 
 ## How automatic detection works
 
 The detector looks for nested SVG groups containing many repeated, filled vector primitives. It ignores text, stroke-only axes, lines, images, gradients, definitions, large page backgrounds, and named annotation artwork such as arrows, labels, ticks, legends, markers, and scale objects. A spatial-density fallback handles flatter SVG structures.
 
-For the supplied Origin figure, the automatic result rasterizes 10,206 heatmap polygons while keeping 39 text objects and 166 other vector objects editable. The 122 polygon segments that form the color-bar ramp remain vector because that ramp is already compact; its outline, ticks, numbers, and title also remain editable.
+The heatmap selection keeps color bars separate. During export, a dense, contiguous horizontal or vertical color-bar ramp becomes one vector rectangle filled by an SVG `linearGradient`. Each stop uses an original cell's exact color at its geometric center, with that color extended constantly to the nearest endpoint. Black or white endcaps stay separate, and the original outline, ticks, numbers, title, transforms, viewport, and stacking order remain editable and unchanged. This intentionally smooths colors between centers; the heatmap PNG still uses exact cell colors without interpolation.
 
-When the selected primitives form a complete Origin matrix, the app reads the exact color of every cell and writes a lossless PNG without rasterizing shared polygon edges. Every opaque bitmap pixel is assigned to one original cell, so the export introduces no interpolation or antialiased seam colors. If the selection is irregular, incomplete, transformed, overlapping, or uses complex SVG painting, the app safely falls back to its general SVG renderer. The PNG is inserted at the original stacking position, and only the selected source primitives are removed. Everything else comes directly from the Origin SVG.
+Recognition is conservative: a ramp needs at least 16 fine rectangular interior cells, many distinct gradually changing colors, and specific color-bar naming or a nearby frame with perpendicular ticks. Small or categorical legends, gapped or overlapping bars, masked heatmap edge strips, selected raster cells, existing gradients, referenced cells, CSS, animation, scripts, and unsupported cell paint or effects are retained unchanged. Export verifies each approved replacement and all retained artwork, and its editable-vector count reflects the actual output.
+
+When the selected primitives form a complete Origin matrix, the app reads the exact color of every cell and writes a lossless PNG without rasterizing shared polygon edges. Every opaque bitmap pixel is assigned to one original cell, so the heatmap introduces no interpolation or antialiased seam colors. If the selection is irregular, incomplete, transformed, overlapping, or uses complex SVG painting, the app safely falls back to its general SVG renderer. The PNG is inserted at the original stacking position, and only the selected source primitives and validated color-bar interiors are replaced. All other artwork comes directly from the Origin SVG. SVG, PDF, and EMF exports share this conversion pipeline.
 
 The manual rectangle is useful when:
 
