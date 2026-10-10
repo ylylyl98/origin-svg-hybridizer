@@ -22,6 +22,8 @@ The app modifies the exported Origin SVG object tree. Heatmap cells keep their e
 
 No Python installation is required for the downloadable Windows app. Keep the complete extracted folder together because the `.exe` uses the included runtime files. If Windows SmartScreen appears for an unsigned community application, choose **More info > Run anyway** only after confirming that the download came from this repository.
 
+Version 1.4.6 is the final corrective release for the editable continuous color-bar gradients, exact-color heatmap PNGs, Symbol Delta previews, and export safeguards introduced in 1.4.5. It also fixes the Windows test fixture for checkouts and temporary files on different drives, keeping relative source-path alias protection covered in CI.
+
 Version 1.4.5 converts confidently recognized, finely sampled color bars into editable continuous sRGB gradients while preserving their frames, ticks, text, and black or white endcaps. The heatmap remains one lossless PNG with exact cell colors. Qt previews now select Symbol explicitly when it is the first requested font family, so Origin's Symbol `D` displays as Delta; exported SVG text and font lists remain unchanged.
 
 This release also adds six export correctness safeguards: it rejects the source path and existing filesystem aliases before rendering, applies shared ancestor opacity only once, rejects selected cells interrupted by retained artwork when one PNG cannot preserve paint order, preserves reflected raster orientation, and uses the compatible SVG renderer for stylesheet-driven fills and rounded rectangles. Unsupported shared filters, blending, and explicitly inherited compositing effects also fail clearly before raster work. Exact-cell PNG generation caches at most one constructed row, bounding cache memory while reusing repeated rows.
@@ -89,7 +91,7 @@ dist\Origin SVG Hybridizer\Origin SVG Hybridizer.exe
 
 The build is windowed, uses the icon in `packaging`, and includes the Python/PySide6 runtime. Keep the complete `Origin SVG Hybridizer` folder together; the `.exe` inside can be used to create a Desktop shortcut or pinned to the taskbar. Generated `build`, `dist`, and `.spec` files are intentionally excluded from Git.
 
-Every push to `main` also runs the **Build Windows application** workflow on GitHub. Tagged versions such as `v1.4.5` are published automatically on the repository's [Releases page](https://github.com/ylylyl98/origin-svg-hybridizer/releases), where users can download the Windows ZIP without installing build tools. Ordinary development builds remain available from the workflow's artifact section for 30 days.
+Every push to `main` also runs the **Build Windows application** workflow on GitHub. Tagged versions such as `v1.4.6` are published automatically on the repository's [Releases page](https://github.com/ylylyl98/origin-svg-hybridizer/releases), where users can download the Windows ZIP without installing build tools. Ordinary development builds remain available from the workflow's artifact section for 30 days.
 
 ## How automatic detection works
 

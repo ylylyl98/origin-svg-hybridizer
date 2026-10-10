@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import tempfile
@@ -52,13 +53,16 @@ class SvgSafetyTests(unittest.TestCase):
 
     def test_export_rejects_source_path_and_preserves_file_before_raster_work(self) -> None:
         for alias in ("same", "relative", "case", "hardlink", "symlink"):
-            with self.subTest(alias=alias), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(alias=alias), tempfile.TemporaryDirectory() as directory, ExitStack() as cleanup:
                 source = Path(directory) / "source.svg"
                 original = write_svg(source, '<g>' + cells() + '</g>')
                 document = SvgDocument(source)
                 detection = document.select_rectangle(Rect(0, 0, 60, 60))
                 output = source
                 if alias == "relative":
+                    # CI may keep the checkout and temporary files on different drives.
+                    cleanup.callback(os.chdir, Path.cwd())
+                    os.chdir(source.parent)
                     output = Path(os.path.relpath(source))
                 elif alias == "case":
                     if os.name != "nt":
